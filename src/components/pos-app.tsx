@@ -886,10 +886,10 @@ export default function PosApp() {
         {tab === "pos" && receipt && <div className="payment-backdrop receipt-backdrop" role="dialog" aria-modal="true" aria-label="Order receipt">
           <section className="payment-dialog receipt-dialog">
             <header className="receipt-header">
-              <h2>DINEFINE RESTAURANT</h2>
-              <p>123 CULINARY AVENUE<br />DOWNTOWN DISTRICT</p>
-              <p>PHONE: (555) 123-4567</p>
-              <p>WWW.DINEFINE.COM</p>
+              <h2>DAN'S RESTAURANT</h2>
+              <p>MIGOSI KISUMU<br />LOLWE ESTATE</p>
+              <p>PHONE: (254) 705 036 665</p>
+              <p>WWW.DAN'SRESTAURANT.COM</p>
             </header>
             <div className="receipt-divider" />
             <div className="receipt-date">{receiptDate(receipt.issuedAt)}</div>
