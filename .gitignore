@@ -6,6 +6,10 @@
 
 # JavaScript dependencies
 node_modules/
+.vercel/
+.next/
+next-env.d.ts
+*.tsbuildinfo
 
 # Python environments and generated files
 .venv/
