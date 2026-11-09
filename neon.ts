@@ -1,6 +1,9 @@
 import { defineConfig } from "@neon/config/v1";
 
 export default defineConfig({
+  buckets: {
+    "product-images": { access: "private" },
+  },
   // Declare your Neon services here
   auth: false,
   // Branch policy: per-branch tuning

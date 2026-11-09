@@ -1,0 +1,4 @@
+ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS expires_on DATE;

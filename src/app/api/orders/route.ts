@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { authorize, isResponse, requestJson, validationError } from "@/lib/api";
 import { db } from "@/lib/db";
-import { can } from "@/lib/permissions";
-import { readSession, requireSameOrigin } from "@/lib/session";
+import { requireSameOrigin } from "@/lib/session";
 
 function cents(value: string | number): number {
   const parsed = Number(value);
@@ -24,29 +23,17 @@ function amount(centsValue: number): string {
 }
 
 export async function GET(request: NextRequest) {
-  const user = await readSession(request);
-  if (!user) return NextResponse.json({ error: "Please sign in again." }, { status: 401 });
+  const kitchenView = request.nextUrl.searchParams.get("view") === "kitchen";
+  const user = await authorize(request, kitchenView ? "kitchen.use" : "invoices.view");
+  if (isResponse(user)) return user;
   try {
-    const activeUser = await db.query<{ role_name: string }>(
-      "SELECT r.name AS role_name FROM users u JOIN roles r ON r.id = u.role_id "
-      + "WHERE u.id = $1 AND u.is_active = TRUE",
-      [user.id],
-    );
-    const currentRole = activeUser.rows[0]?.role_name;
-    if (!currentRole) return NextResponse.json({ error: "Please sign in again." }, { status: 401 });
-    user.role = currentRole;
-    const kitchenView = can(user.role, "kitchen.use");
-    if (!kitchenView && !can(user.role, "invoices.view")) {
-      return NextResponse.json({ error: "You do not have permission for this action." }, { status: 403 });
-    }
-    if (kitchenView && !can(user.role, "invoices.view")) {
+    if (kitchenView) {
       const tickets = await db.query(
-        `SELECT o.id, o.order_number, o.order_type, o.created_at, o.kitchen_status,
+        `SELECT o.id, o.order_number, o.order_type, o.customer_name, o.created_at, o.kitchen_status,
                 t.table_name
          FROM orders o LEFT JOIN restaurant_tables t ON t.id = o.table_id
-         WHERE o.kitchen_status IN ('pending', 'preparing', 'ready')
-           AND o.status != 'cancelled'
-         ORDER BY o.created_at, o.id`,
+         WHERE o.status != 'cancelled'
+         ORDER BY o.created_at, o.id LIMIT 200`,
       );
       const orders = await Promise.all(tickets.rows.map(async (ticket) => {
         const items = await db.query(
@@ -60,7 +47,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ orders });
     }
     const result = await db.query(
-      `SELECT o.id, o.order_number, o.order_type, o.total, o.currency, o.status,
+      `SELECT o.id, o.order_number, o.order_type, o.customer_name, o.total, o.currency, o.status,
               o.kitchen_status, o.created_at, t.table_name,
               u.full_name AS cashier,
               (SELECT p.method FROM payments p
@@ -87,6 +74,7 @@ export async function POST(request: NextRequest) {
   const body = await requestJson(request);
   const orderType = body?.orderType;
   const tableId = body?.tableId;
+  const customerName = typeof body?.customerName === "string" ? body.customerName.trim().slice(0, 120) : "";
   const lines = body?.items;
   if (
     (orderType !== "take_away" && orderType !== "dine_in") ||
@@ -185,13 +173,13 @@ export async function POST(request: NextRequest) {
 
     const order = await client.query<{ id: string }>(
       `INSERT INTO orders
-       (order_number, order_type, table_id, subtotal, currency, discount_pct,
+       (order_number, order_type, table_id, customer_name, subtotal, currency, discount_pct,
         discount_amount, vat_pct, vat_amount, service_pct, service_amount, total,
         status, kitchen_status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'open', 'pending', $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'open', 'pending', $14)
        RETURNING id`,
       [
-        orderNumber, orderType, orderType === "dine_in" ? tableId : null,
+        orderNumber, orderType, orderType === "dine_in" ? tableId : null, customerName || null,
         amount(subtotalCents), currency, discountRate / 100, amount(discountCents),
         vatRate / 100, amount(vatCents), serviceRate / 100, amount(serviceCents),
         amount(totalCents), user.id,
