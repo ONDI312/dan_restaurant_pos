@@ -64,6 +64,7 @@ input:focus, select:focus { border-color: #d5784d; box-shadow: 0 0 0 3px #d5784d
 .connection { display: flex; align-items: center; gap: 8px; padding: 14px 5px 0; color: #8a8e88; font-size: 10px; }
 .connection i, .online-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ca77c; box-shadow: 0 0 0 3px #4ca77c1c; }
 .workspace { width: calc(100% - 250px); min-height: 100vh; margin-left: 250px; padding: 0 34px 42px; }
+.workspace.kitchen-workspace { padding-top: 16px; }
 .topbar { display: flex; min-height: 100px; align-items: center; justify-content: space-between; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
 .topbar .eyebrow { margin-bottom: 4px; color: #969a92; font-size: 9px; letter-spacing: .08em; }
 .topbar h1 { margin: 0; font-size: 23px; letter-spacing: -.04em; }

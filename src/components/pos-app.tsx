@@ -124,7 +124,13 @@ export default function PosApp() {
   const [report, setReport] = useState<Report | null>(null);
   const [fromDate, setFromDate] = useState(() => dateInput(new Date(Date.now() - 29 * 86_400_000)));
   const [toDate, setToDate] = useState(() => dateInput(new Date()));
-  const [activeOrder, setActiveOrder] = useState<{ id: number; number: string; total: string; currency: string } | null>(null);
+  const [activeOrder, setActiveOrder] = useState<{
+    id: number;
+    number: string;
+    total: string;
+    currency: string;
+    tableName: string | null;
+  } | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -174,6 +180,12 @@ export default function PosApp() {
   const loadDashboard = useCallback(async () => {
     const result = await request<Dashboard>("/api/dashboard");
     setDashboard(result);
+  }, []);
+
+  const refreshBootstrap = useCallback(async () => {
+    const current = await request<Bootstrap & { user: User }>("/api/bootstrap");
+    setBootstrap(current);
+    setUser(current.user);
   }, []);
 
   const loadReport = useCallback(async () => {
@@ -233,11 +245,8 @@ export default function PosApp() {
       saved = true;
       setNotice(`${moduleLinks.find((item) => item.resource === module)?.label ?? "Record"} saved.`);
       await loadModule(module);
-      if (module === "product" || module === "category") await loadProducts();
-      if (module === "settings") {
-        const current = await request<Bootstrap & { user: User }>("/api/bootstrap");
-        setBootstrap(current);
-      }
+      if (["product", "category", "inventory"].includes(module)) await loadProducts();
+      if (["category", "tables", "settings"].includes(module)) await refreshBootstrap();
     } catch (error) {
       if (uploadedImageKey && !saved) {
         try {
@@ -254,7 +263,7 @@ export default function PosApp() {
     } finally {
       setBusy(false);
     }
-  }, [loadModule, loadProducts]);
+  }, [loadModule, loadProducts, refreshBootstrap]);
 
   const finalizePurchase = useCallback(async (id: number) => {
     setBusy(true);
@@ -285,16 +294,14 @@ export default function PosApp() {
             : "pos",
       );
       if (signedInUser.role !== "Kitchen") {
-        const config = await request<Bootstrap & { user: User }>("/api/bootstrap");
-        setBootstrap(config);
-        setUser(config.user);
+        await refreshBootstrap();
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load the app.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshBootstrap]);
 
   useEffect(() => {
     let active = true;
@@ -324,6 +331,14 @@ export default function PosApp() {
       if (module) loadModule(module).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load module."));
     }
   }, [loadDashboard, loadKitchen, loadModule, loadProducts, loadReport, loading, tab, user]);
+
+  useEffect(() => {
+    if (!user || loading || tab !== "kitchen") return;
+    const interval = window.setInterval(() => {
+      loadKitchen().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets."));
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [loadKitchen, loading, tab, user]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -425,13 +440,20 @@ export default function PosApp() {
           items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity })),
         }),
       });
-      setActiveOrder({ id: result.orderId, number: result.orderNumber, total: result.total, currency: result.currency });
+      setActiveOrder({
+        id: result.orderId,
+        number: result.orderNumber,
+        total: result.total,
+        currency: result.currency,
+        tableName: orderType === "dine_in"
+          ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? null
+          : null,
+      });
       setPaymentAmount(result.total);
       setPaymentDialogOpen(openPayment);
       setCart([]);
       setNotice(`Order ${result.orderNumber} saved. Record payment to complete it.`);
-      await loadProducts();
-      await loadOrders();
+      await Promise.all([loadProducts(), loadOrders(), refreshBootstrap()]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save order.");
     } finally {
@@ -457,9 +479,12 @@ export default function PosApp() {
       if (result.status === "paid") {
         setActiveOrder(null);
         setPaymentDialogOpen(false);
-        await loadProducts();
-        await loadOrders();
-        if (user && ["Admin", "Manager"].includes(user.role)) await loadDashboard();
+        await Promise.all([
+          loadProducts(),
+          loadOrders(),
+          refreshBootstrap(),
+          ...(user && ["Admin", "Manager"].includes(user.role) ? [loadDashboard()] : []),
+        ]);
       }
 
     } catch (error) {
@@ -535,11 +560,11 @@ export default function PosApp() {
         </div>
       </aside>
 
-      <section className="workspace">
-        <header className="topbar">
+      <section className={tab === "kitchen" ? "workspace kitchen-workspace" : "workspace"}>
+        {tab !== "kitchen" && <header className="topbar">
           <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{currentLabel}</h1></div>
           <div className="topbar-user"><span className="online-dot" />{user.fullName}<span className="role-pill">{user.role}</span></div>
-        </header>
+        </header>}
         {notice && <div className={`notice ${notice.toLowerCase().includes("could not") || notice.toLowerCase().includes("invalid") ? "error" : ""}`} role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "pos" && (
@@ -549,7 +574,7 @@ export default function PosApp() {
                 <strong><span>Order</span>{activeOrder?.number ?? "New order"}</strong>
                 <strong><span>Customer</span>{customerName.trim() || "Walk-in customer"}</strong>
                 <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
-                <strong><span>Table</span>{orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
+                <strong><span>Table</span>{activeOrder ? activeOrder.tableName ?? "Not selected" : orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
               </div>
               {activeOrder && <div className="pos-pending-order"><span>Payment due for {activeOrder.number}</span><button type="button" onClick={() => { setPaymentAmount(activeOrder.total); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
               <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
