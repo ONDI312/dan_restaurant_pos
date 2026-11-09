@@ -13,7 +13,7 @@ Product photos must be JPEG, PNG, or WebP and no larger than 4 MB. Payment metho
 1. Import `ONDI312/dan_restaurant_pos` in Vercel.
 2. Set **Root Directory** to the repository root (`.`), not `dan_restaurant_pos`.
 3. Use the **Next.js** framework preset. Keep the default build/output settings; the build command is `npm run build`.
-4. For a fresh database, apply [`migrations/20261109_vercel_web.sql`](./migrations/20261109_vercel_web.sql), [`migrations/20261109_workspace_modules.sql`](./migrations/20261109_workspace_modules.sql), and [`migrations/20261109_payment_workflow.sql`](./migrations/20261109_payment_workflow.sql) to the production Neon branch. The first two migrations are already applied to this project's production branch.
+4. For a fresh database, apply [`migrations/20261109_vercel_web.sql`](./migrations/20261109_vercel_web.sql), [`migrations/20261109_workspace_modules.sql`](./migrations/20261109_workspace_modules.sql), and [`migrations/20261109_payment_workflow.sql`](./migrations/20261109_payment_workflow.sql) to the production Neon branch. All three are already applied to this project's production branch.
 5. Run `neon deploy --branch production` from the linked project root to provision the private product-photo bucket declared in `neon.ts`.
 6. Pull the production storage variables locally with `neon env pull --branch production --file .env.production.local --service object-storage`. Add these values to Vercel without committing or sharing the local env file.
 7. Add these Vercel environment variables for each deployment that uses the production Neon branch:
