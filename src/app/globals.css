@@ -630,3 +630,41 @@ tbody tr:last-child td { border-bottom: 0; }
   .catalog-tools input, .catalog-tools select, .module-form input:not([type="checkbox"]), .module-form select,
   .module-form textarea, .date-filter input, .audit-filter-bar select { min-height: 44px; }
 }
+
+.receipt-dialog {
+  width: min(80mm, calc(100vw - 20px));
+  max-width: 80mm;
+  max-height: min(90dvh, 900px);
+  gap: 0;
+  overflow-y: auto;
+  padding: 6mm 5mm;
+  color: #111;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.receipt-dialog .receipt-header { text-align: center; }
+.receipt-header h2 { margin: 0 0 9px; font: 800 17px/1.15 "Courier New", Courier, monospace; letter-spacing: .04em; }
+.receipt-header p { margin: 2px 0; font-size: 10px; letter-spacing: .04em; }
+.receipt-divider { width: 100%; margin: 11px 0; border-top: 1px dashed #222; }
+.receipt-date { margin: 1px 0 4px; text-align: center; font-weight: 700; }
+.receipt-meta-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 10px; }
+.receipt-meta-grid > div, .receipt-payment > div, .receipt-financials > div { display: flex; min-width: 0; justify-content: space-between; gap: 5px; }
+.receipt-meta-grid b, .receipt-payment b { overflow-wrap: anywhere; text-align: right; }
+.receipt-dialog .receipt-lines { display: grid; gap: 5px; margin: 0; }
+.receipt-dialog .receipt-lines > div { align-items: flex-start; gap: 8px; }
+.receipt-dialog .receipt-lines > div > span { min-width: 0; overflow-wrap: anywhere; }
+.receipt-dialog .receipt-lines b { flex: 0 0 auto; text-align: right; }
+.receipt-financials { display: grid; gap: 4px; }
+.receipt-grand-total { margin-top: 3px; padding-top: 6px; border-top: 1px solid #222; font-size: 14px; font-weight: 800; }
+.receipt-payment { display: grid; gap: 4px; }
+.receipt-policy, .receipt-thanks { margin: 12px 0 0; text-align: center; font-weight: 700; letter-spacing: .025em; }
+.receipt-thanks { margin-top: 14px; }
+.receipt-barcode { display: block; width: min(100%, 68mm); height: 15mm; margin: 7px auto 0; color: #000; }
+.receipt-transaction-id { display: block; text-align: center; font: 12px Georgia, serif; }
+.receipt-action { width: 100%; margin-top: 10px; }
+@media print {
+  @page { size: 80mm auto; margin: 0; }
+  .receipt-dialog { position: static !important; inset: auto !important; width: 80mm !important; max-width: 80mm !important; max-height: none !important; overflow: visible !important; margin: 0 !important; padding: 4mm !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+  .receipt-action { display: none !important; }
+}

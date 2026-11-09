@@ -65,6 +65,7 @@ type Report = {
   profit: { name: string; currency: string; profit: string }[];
 };
 type CartLine = { product: Product; quantity: number };
+type ReceiptData = { id: number; number: string; customer: string; type: string; table: string; guests: string; server: string; issuedAt: string; lines: CartLine[]; subtotal: number; discount: number; tax: number; service: number; total: number; currency: string };
 type ModuleId = "pos" | "product" | "inventory" | "supplier" | "purchase"
   | "category" | "tables" | "dashboard" | "expense" | "reports" | "users"
   | "settings" | "invoice" | "kitchen" | "audit";
@@ -118,6 +119,37 @@ const paymentMethodLabels: Record<string, string> = {
   "bank-transfer": "Bank transfer",
 };
 const paymentMethodLabel = (method: string) => paymentMethodLabels[method] ?? method;
+const code39Patterns: Record<string, string> = {
+  "0": "nnnwwnwnn", "1": "wnnwnnnnw", "2": "nnwwnnnnw", "3": "wnwwnnnnn",
+  "4": "nnnwwnnnw", "5": "wnnwwnnnn", "6": "nnwwwnnnn", "7": "nnnwnnwnw",
+  "8": "wnnwnnwnn", "9": "nnwwnnwnn", "*": "nwnnwnwnn",
+};
+
+function TransactionBarcode({ value }: { value: number }) {
+  const encoded = `*${String(value)}*`;
+  let cursor = 10;
+  const bars: { x: number; width: number }[] = [];
+  for (const character of encoded) {
+    const pattern = code39Patterns[character];
+    if (!pattern) continue;
+    pattern.split("").forEach((unit, index) => {
+      const width = unit === "w" ? 3 : 1;
+      if (index % 2 === 0) bars.push({ x: cursor, width });
+      cursor += width;
+    });
+    cursor += 1;
+  }
+  return <svg className="receipt-barcode" role="img" aria-label={`Barcode for transaction ${value}`} viewBox={`0 0 ${cursor + 9} 50`}>
+    {bars.map((bar, index) => <rect key={index} x={bar.x} y="0" width={bar.width} height="44" fill="currentColor" />)}
+  </svg>;
+}
+
+function receiptDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 const customerTypes = [
   "Walk-In Customers",
   "Regulars",
@@ -158,7 +190,7 @@ export default function PosApp() {
     tableName: string | null;
   } | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [receipt, setReceipt] = useState<{ number: string; customer: string; type: string; table: string; lines: CartLine[]; total: number; currency: string } | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptData | null>(null);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [transactionRef, setTransactionRef] = useState("");
@@ -532,7 +564,7 @@ export default function PosApp() {
     setBusy(true);
     setNotice("");
     try {
-      const result = await request<{ orderId: number; orderNumber: string; total: string; currency: string }>("/api/orders", {
+      const result = await request<{ orderId: number; orderNumber: string; total: string; currency: string; createdAt: string }>("/api/orders", {
         method: "POST",
         body: JSON.stringify({
           orderType,
@@ -545,11 +577,19 @@ export default function PosApp() {
       setActiveOrder(null);
       setPaymentDialogOpen(false);
       setReceipt({
-        number: result.orderNumber,
+        id: result.orderId,
+        number: `#R-${result.orderId}`,
         customer: customerName.trim() || customerTypes[0],
-        type: orderType === "dine_in" ? "Dine in" : "Take away",
+        type: orderType === "dine_in" ? "DINE IN" : "TAKE AWAY",
         table: orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "—" : "—",
+        guests: "—",
+        server: user?.fullName.toUpperCase() ?? "—",
+        issuedAt: result.createdAt,
         lines: cart.map((line) => ({ ...line })),
+        subtotal: cartTotals.subtotal,
+        discount: cartTotals.discount,
+        tax: cartTotals.vat,
+        service: cartTotals.service,
         total: Number(result.total),
         currency: result.currency,
       });
@@ -845,14 +885,43 @@ export default function PosApp() {
 
         {tab === "pos" && receipt && <div className="payment-backdrop receipt-backdrop" role="dialog" aria-modal="true" aria-label="Order receipt">
           <section className="payment-dialog receipt-dialog">
-            <p className="eyebrow">CUSTOMER RECEIPT</p><h2>{bootstrap?.settings.restaurantName ?? "Restaurant"}</h2>
-            <p>Order {receipt.number}<br />{new Date().toLocaleString()}</p>
-            <p>{receipt.customer} · {receipt.type}{receipt.table !== "—" ? ` · ${receipt.table}` : ""}</p>
-            <div className="receipt-lines">{receipt.lines.map((line) => <div key={line.product.id}><span>{line.quantity} × {line.product.name}</span><span>{money(Number(line.product.price) * line.quantity, receipt.currency)}</span></div>)}</div>
-            <div className="payment-total"><span>Total due after dining</span><strong>{money(receipt.total, receipt.currency)}</strong></div>
-            <p>Present this receipt when you are ready to pay.</p>
-            <button className="primary full" onClick={() => { window.print(); void finishReceipt(); }}>Print receipt</button>
-            <button className="secondary full" onClick={() => void finishReceipt()}>Done · go to invoices</button>
+            <header className="receipt-header">
+              <h2>DINEFINE RESTAURANT</h2>
+              <p>123 CULINARY AVENUE<br />DOWNTOWN DISTRICT</p>
+              <p>PHONE: (555) 123-4567</p>
+              <p>WWW.DINEFINE.COM</p>
+            </header>
+            <div className="receipt-divider" />
+            <div className="receipt-date">{receiptDate(receipt.issuedAt)}</div>
+            <div className="receipt-meta-grid">
+              <div><span>RECEIPT:</span><b>{receipt.number}</b></div><div><span>TABLE:</span><b>{receipt.table}</b></div>
+              <div><span>SERVER:</span><b>{receipt.server}</b></div><div><span>GUESTS:</span><b>{receipt.guests}</b></div>
+            </div>
+            <div className="receipt-divider" />
+            <div className="receipt-lines">{receipt.lines.map((line) => <div key={line.product.id}><span>{line.quantity}X {line.product.name.toUpperCase()}</span><b>{money(Number(line.product.price) * line.quantity, receipt.currency)}</b></div>)}</div>
+            <div className="receipt-divider" />
+            <div className="receipt-financials">
+              <div><span>SUBTOTAL:</span><b>{money(receipt.subtotal, receipt.currency)}</b></div>
+              {receipt.discount > 0 && <div><span>DISCOUNT:</span><b>-{money(receipt.discount, receipt.currency)}</b></div>}
+              <div><span>TAX:</span><b>{money(receipt.tax, receipt.currency)}</b></div>
+              {receipt.service > 0 && <div><span>SERVICE:</span><b>{money(receipt.service, receipt.currency)}</b></div>}
+              <div className="receipt-grand-total"><strong>TOTAL:</strong><strong>{money(receipt.total, receipt.currency)}</strong></div>
+            </div>
+            <div className="receipt-divider" />
+            <div className="receipt-payment">
+              <div><span>CARD:</span><b>NOT CAPTURED</b></div>
+              <div><span>TYPE:</span><b>NOT CAPTURED</b></div>
+              <div><span>ENTRY:</span><b>NOT CAPTURED</b></div>
+              <div><span>TIME:</span><b>—</b></div>
+              <div><span>REF:</span><b>REF {receipt.id}</b></div>
+              <div><span>STATUS:</span><b>PENDING</b></div>
+            </div>
+            <p className="receipt-policy">TIP IS NOT INCLUDED.<br />PLEASE COME AGAIN!</p>
+            <p className="receipt-thanks">THANK YOU FOR DINING WITH US!</p>
+            <TransactionBarcode value={receipt.id} />
+            <span className="receipt-transaction-id">{receipt.id}</span>
+            <button className="primary full receipt-action" onClick={() => { window.print(); void finishReceipt(); }}>Print receipt</button>
+            <button className="secondary full receipt-action" onClick={() => void finishReceipt()}>Done · go to invoices</button>
           </section>
         </div>}
 

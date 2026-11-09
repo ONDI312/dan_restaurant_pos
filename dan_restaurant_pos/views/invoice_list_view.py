@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
+from html import escape
 
 import psycopg
-from PyQt6.QtCore import QDate
-from PyQt6.QtGui import QTextDocument
+from PyQt6.QtCore import QDate, QSizeF, Qt
+from PyQt6.QtGui import QPageSize, QTextDocument
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -27,6 +29,94 @@ from dan_restaurant_pos.services.invoice_service import (
 )
 
 
+
+_CODE39 = {
+    "0": "nnnwwnwnn", "1": "wnnwnnnnw", "2": "nnwwnnnnw", "3": "wnwwnnnnn",
+    "4": "nnnwwnnnw", "5": "wnnwwnnnn", "6": "nnwwwnnnn", "7": "nnnwnnwnw",
+    "8": "wnnwnnwnn", "9": "nnwwnnwnn", "*": "nwnnwnwnn",
+}
+
+
+def _barcode_html(transaction_id: int) -> str:
+    elements = []
+    for character in f"*{transaction_id}*":
+        for index, unit in enumerate(_CODE39[character]):
+            width = 3 if unit == "w" else 1
+            if index % 2 == 0:
+                elements.append(f'<span style="display:inline-block;width:{width}px;height:48px;background:#000"></span>')
+            else:
+                elements.append(f'<span style="display:inline-block;width:{width}px;height:48px"></span>')
+        elements.append('<span style="display:inline-block;width:1px;height:48px"></span>')
+    return "".join(elements)
+
+
+def _format_receipt_time(value) -> str:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return "N/A"
+    return value.strftime("%d/%m/%Y %H:%M") if hasattr(value, "strftime") else "N/A"
+
+
+def _receipt_html(data: dict) -> str:
+    invoice = data["invoice"]
+    currency = escape(str(invoice["currency"]))
+    transaction_id = int(invoice["transaction_id"])
+    issued_at = invoice["issued_at"]
+    date_label = _format_receipt_time(issued_at)
+    table_name = escape(str(invoice.get("table_name") or "N/A"))
+    server = escape(str(invoice.get("cashier") or "N/A").upper())
+    rows = "".join(
+        f'<tr><td>{int(item["quantity"])}X {escape(str(item["name"]).upper())}</td>'
+        f'<td class="amount">{currency} {float(item["line_total"]):.2f}</td></tr>'
+        for item in data["items"]
+    )
+    totals = f'<tr><td>SUBTOTAL:</td><td class="amount">{currency} {float(invoice["subtotal"]):.2f}</td></tr>'
+    if float(invoice["discount_amount"]):
+        totals += f'<tr><td>DISCOUNT:</td><td class="amount">-{currency} {float(invoice["discount_amount"]):.2f}</td></tr>'
+    totals += f'<tr><td>TAX:</td><td class="amount">{currency} {float(invoice["vat_amount"]):.2f}</td></tr>'
+    if float(invoice["service_amount"]):
+        totals += f'<tr><td>SERVICE:</td><td class="amount">{currency} {float(invoice["service_amount"]):.2f}</td></tr>'
+    totals += f'<tr class="total"><td>TOTAL:</td><td class="amount">{currency} {float(invoice["total"]):.2f}</td></tr>'
+    payment = data["payments"][-1] if data["payments"] else {}
+    method = str(payment.get("method") or "")
+    payment_type = method.upper() if method else "NOT CAPTURED"
+    payment_time = payment.get("paid_at")
+    payment_time_label = _format_receipt_time(payment_time)
+    reference = escape(str(payment.get("transaction_ref") or f"REF {transaction_id}"))
+    status = escape(str(payment.get("status") or "pending").upper())
+    card_value = "NOT CAPTURED"
+    details = "".join([
+        f'<tr><td>CARD:</td><td class="amount">{card_value}</td></tr>',
+        f'<tr><td>TYPE:</td><td class="amount">{escape(payment_type)}</td></tr>',
+        '<tr><td>ENTRY:</td><td class="amount">NOT RECORDED</td></tr>',
+        f'<tr><td>TIME:</td><td class="amount">{payment_time_label}</td></tr>',
+        f'<tr><td>REF:</td><td class="amount">{reference}</td></tr>',
+        f'<tr><td>STATUS:</td><td class="amount"><b>{status}</b></td></tr>',
+    ])
+    return f'''<html><head><style>
+      body {{ font-family: "Courier New", monospace; font-size: 9pt; color: #111; }}
+      h1 {{ text-align: center; font-size: 14pt; margin: 0 0 6pt; }}
+      p.center {{ text-align: center; margin: 2pt 0; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      td {{ padding: 2pt 0; vertical-align: top; }}
+      .amount {{ text-align: right; white-space: nowrap; }}
+      .divider td {{ border-top: 1px dashed #222; height: 6pt; }}
+      .meta td {{ width: 50%; }} .total td {{ font-weight: bold; font-size: 11pt; border-top: 1px solid #222; padding-top: 5pt; }}
+      .barcode {{ text-align: center; white-space: nowrap; margin-top: 8pt; }}
+    </style></head><body>
+      <h1>DINEFINE RESTAURANT</h1>
+      <p class="center">123 CULINARY AVENUE<br/>DOWNTOWN DISTRICT<br/>PHONE: (555) 123-4567<br/>WWW.DINEFINE.COM</p>
+      <table><tr class="divider"><td colspan="2"></td></tr></table>
+      <p class="center"><b>{date_label}</b></p>
+      <table class="meta"><tr><td>RECEIPT: #R-{transaction_id}</td><td class="amount">TABLE: {table_name}</td></tr>
+      <tr><td>SERVER: {server}</td><td class="amount">GUESTS: N/A</td></tr></table>
+      <table><tr class="divider"><td colspan="2"></td></tr>{rows}<tr class="divider"><td colspan="2"></td></tr>{totals}<tr class="divider"><td colspan="2"></td></tr>{details}</table>
+      <p class="center"><b>TIP IS NOT INCLUDED.<br/>PLEASE COME AGAIN!</b></p>
+      <p class="center"><b>THANK YOU FOR DINING WITH US!</b></p>
+      <div class="barcode">{_barcode_html(transaction_id)}<br/>{transaction_id}</div>
+    </body></html>'''
 class InvoiceListWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -113,32 +203,11 @@ class InvoiceListWindow(QMainWindow):
             return
         try:
             data = get_invoice(self.selected_order_id)
-            invoice = data["invoice"]
-            merchant = data["merchant"]
-            currency = invoice["currency"]
-            lines = [
-                f"{item['quantity']} x {item['name']} @ {currency} {item['unit_price']:.2f}"
-                for item in data["items"]
-            ]
-            payments = [
-                f"{item['method']}: {currency} {item['amount_paid']:.2f} ({item['status']})"
-                for item in data["payments"]
-            ]
-            text = (
-                f"{merchant['restaurant_name']}\n"
-                f"{merchant['address']}\n{merchant['phone']} {merchant['email']}\n"
-                f"Invoice {invoice['invoice_number']}\n"
-                f"Order {invoice['order_number']}\nDate {invoice['issued_at']}\n\n"
-                + "\n".join(lines)
-                + f"\n\nSubtotal: {currency} {invoice['subtotal']:.2f}"
-                + f"\nDiscount: {currency} {invoice['discount_amount']:.2f}"
-                + f"\nVAT: {currency} {invoice['vat_amount']:.2f}"
-                + f"\nService charge: {currency} {invoice['service_amount']:.2f}"
-                + f"\nTOTAL: {currency} {invoice['total']:.2f}\n\n"
-                + "\n".join(payments)
-                + f"\n\n{merchant['receipt_footer']}"
-            )
-            QMessageBox.information(self, "Receipt", text)
+            preview = QMessageBox(self)
+            preview.setWindowTitle("Receipt")
+            preview.setTextFormat(Qt.TextFormat.RichText)
+            preview.setText(_receipt_html(data))
+            preview.exec()
         except ValueError as error:
             QMessageBox.warning(self, "Invoices", str(error))
         except (psycopg.Error, sqlite3.Error) as error:
@@ -150,27 +219,14 @@ class InvoiceListWindow(QMainWindow):
             return
         try:
             data = get_invoice(self.selected_order_id)
-            invoice = data["invoice"]
-            merchant = data["merchant"]
-            currency = invoice["currency"]
-            text = (
-                f"{merchant['restaurant_name']}\n{merchant['address']}\n"
-                f"{merchant['phone']} {merchant['email']}\n"
-                f"Invoice {invoice['invoice_number']} | Order {invoice['order_number']}\n"
-                f"Date {invoice['issued_at']}\n\n"
-                + "\n".join(
-                    f"{item['quantity']} x {item['name']} @ {currency} "
-                    f"{item['unit_price']:.2f}"
-                    for item in data["items"]
-                )
-                + f"\n\nTOTAL: {currency} {invoice['total']:.2f}\n"
-                + f"{merchant['receipt_footer']}"
-            )
+            html = _receipt_html(data)
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            page_height = max(180, 145 + len(data["items"]) * 8)
+            printer.setPageSize(QPageSize(QSizeF(80, page_height), QPageSize.Unit.Millimeter))
             dialog = QPrintDialog(printer, self)
             if dialog.exec():
                 document = QTextDocument()
-                document.setPlainText(text)
+                document.setHtml(html)
                 document.print(printer)
         except ValueError as error:
             QMessageBox.warning(self, "Invoices", str(error))

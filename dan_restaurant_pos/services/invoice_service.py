@@ -4,10 +4,10 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.graphics.barcode import createBarcodeDrawing
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
 
 from dan_restaurant_pos.database.db_utils import connection, fetch_all, fetch_one, run_query
@@ -45,10 +45,12 @@ def get_invoice(order_id: int) -> dict:
     with connection() as conn:
         invoice = run_query(
             conn,
-            "SELECT i.invoice_number, i.issued_at, o.order_number, o.order_type, "
-            "o.subtotal, o.discount_amount, o.vat_amount, o.service_amount, o.total, o.currency, "
+            "SELECT i.invoice_number, i.issued_at, o.id AS transaction_id, o.order_number, "
+            "o.order_type, o.customer_name, o.created_at, o.subtotal, o.discount_amount, "
+            "o.vat_amount, o.service_amount, o.total, o.currency, t.table_name, "
             "u.full_name AS cashier FROM invoices i "
             "JOIN orders o ON o.id = i.order_id "
+            "LEFT JOIN restaurant_tables t ON t.id = o.table_id "
             "LEFT JOIN users u ON u.id = o.created_by WHERE o.id = ?",
             (order_id,),
         ).fetchone()
@@ -63,7 +65,7 @@ def get_invoice(order_id: int) -> dict:
         ).fetchall()
         payments = run_query(
             conn,
-            "SELECT method, amount_paid, transaction_ref, status "
+            "SELECT method, amount_paid, transaction_ref, status, paid_at "
             "FROM payments WHERE order_id = ? ORDER BY id",
             (order_id,),
         ).fetchall()
@@ -80,65 +82,122 @@ def export_invoice_pdf(order_id: int, output_path: str | Path) -> Path:
     invoice = data["invoice"]
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    document = SimpleDocTemplate(str(path), pagesize=A4)
-    styles = getSampleStyleSheet()
     currency = invoice["currency"]
-    merchant = data["merchant"]
+    transaction_id = int(invoice["transaction_id"])
+    cashier = (invoice.get("cashier") or "—").upper()
+    issued_at = invoice["issued_at"]
+    if isinstance(issued_at, str):
+        try:
+            issued_at = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+        except ValueError:
+            issued_at = None
+    date_label = issued_at.strftime("%d/%m/%Y %H:%M") if isinstance(issued_at, datetime) else "—"
+    payments = data["payments"]
+    latest_payment = payments[-1] if payments else {}
+    method = str(latest_payment.get("method") or "").upper()
+    payment_time = latest_payment.get("paid_at")
+    if payment_time and hasattr(payment_time, "strftime"):
+        payment_time_label = payment_time.strftime("%d/%m/%Y %H:%M")
+    else:
+        payment_time_label = "—"
+    payment_status = str(latest_payment.get("status") or "PENDING").upper()
+    payment_reference = str(latest_payment.get("transaction_ref") or f"REF {transaction_id}")
+    page_height = (195 + len(data["items"]) * 8 + len(payments) * 6) * mm
+    document = SimpleDocTemplate(
+        str(path), pagesize=(80 * mm, page_height),
+        leftMargin=4 * mm, rightMargin=4 * mm, topMargin=5 * mm, bottomMargin=5 * mm,
+    )
+    styles = getSampleStyleSheet()
+    center = styles["Normal"].clone("ReceiptCenter")
+    center.fontName = "Courier-Bold"
+    center.fontSize = 9
+    center.leading = 12
+    center.alignment = 1
+    normal = styles["Normal"].clone("ReceiptNormal")
+    normal.fontName = "Courier"
+    normal.fontSize = 8
+    normal.leading = 11
+    bold = styles["Normal"].clone("ReceiptBold")
+    bold.fontName = "Courier-Bold"
+    bold.fontSize = 8
+    bold.leading = 11
     story = [
-        Paragraph(escape(merchant["restaurant_name"]), styles["Title"]),
-        Paragraph(escape(merchant["address"]), styles["Normal"]),
-        Paragraph(
-            escape(" | ".join(value for value in (merchant["phone"], merchant["email"]) if value)),
-            styles["Normal"],
-        ),
-        Paragraph(f"Invoice: {invoice['invoice_number']}", styles["Normal"]),
-        Paragraph(f"Order: {invoice['order_number']}", styles["Normal"]),
-        Paragraph(f"Date: {invoice['issued_at']}", styles["Normal"]),
-        Paragraph(f"Cashier: {invoice['cashier'] or 'N/A'}", styles["Normal"]),
-        Spacer(1, 8 * mm),
+        Paragraph("DINEFINE RESTAURANT", center),
+        Paragraph("123 CULINARY AVENUE<br/>DOWNTOWN DISTRICT", center),
+        Paragraph("PHONE: (555) 123-4567", center),
+        Paragraph("WWW.DINEFINE.COM", center),
+        Spacer(1, 3 * mm),
+        HRFlowable(width="100%", thickness=0.7, color=colors.black),
+        Spacer(1, 2 * mm),
+        Paragraph(date_label, center),
     ]
-    rows = [["Item", "Qty", "Unit price", "Total"]]
+    metadata = [
+        [Paragraph(f"RECEIPT: #R-{transaction_id}", normal), Paragraph(f"TABLE: {escape(str(invoice.get('table_name') or '—'))}", normal)],
+        [Paragraph(f"SERVER: {escape(cashier)}", normal), Paragraph("GUESTS: —", normal)],
+    ]
+    meta_table = Table(metadata, colWidths=[36 * mm, 36 * mm])
+    meta_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    story.extend([meta_table, Spacer(1, 2 * mm), HRFlowable(width="100%", thickness=0.7, color=colors.black), Spacer(1, 2 * mm)])
+    item_rows = []
     for item in data["items"]:
-        rows.append(
-            [
-                escape(item["name"]),
-                str(item["quantity"]),
-                f"{currency} {item['unit_price']:.2f}",
-                f"{currency} {item['line_total']:.2f}",
-            ]
-        )
-    rows.extend(
-        [
-            ["Subtotal", "", "", f"{currency} {invoice['subtotal']:.2f}"],
-            ["Discount", "", "", f"{currency} {invoice['discount_amount']:.2f}"],
-            ["VAT", "", "", f"{currency} {invoice['vat_amount']:.2f}"],
-            ["Service charge", "", "", f"{currency} {invoice['service_amount']:.2f}"],
-            ["Grand total", "", "", f"{currency} {invoice['total']:.2f}"],
-        ]
-    )
-    table = Table(rows, repeatRows=1, colWidths=[80 * mm, 18 * mm, 38 * mm, 38 * mm])
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#B34700")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E7CDBB")),
-                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FFF1E6")),
-            ]
-        )
-    )
-    story.append(table)
-    story.append(Spacer(1, 6 * mm))
-    for payment in data["payments"]:
-        story.append(
-            Paragraph(
-                f"Payment: {payment['method']} - {currency} {payment['amount_paid']:.2f} "
-                f"({payment['status']})",
-                styles["Normal"],
-            )
-        )
-    story.append(Spacer(1, 6 * mm))
-    story.append(Paragraph(escape(merchant["receipt_footer"]), styles["Normal"]))
+        name = escape(str(item["name"]).upper())
+        item_rows.append([
+            Paragraph(f"{item['quantity']}X {name}", normal),
+            Paragraph(f"{currency} {item['line_total']:.2f}", bold),
+        ])
+    items_table = Table(item_rows, colWidths=[52 * mm, 20 * mm])
+    items_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    story.extend([items_table, Spacer(1, 2 * mm), HRFlowable(width="100%", thickness=0.7, color=colors.black), Spacer(1, 2 * mm)])
+    financial_rows = [
+        [Paragraph("SUBTOTAL:", normal), Paragraph(f"{currency} {invoice['subtotal']:.2f}", normal)],
+    ]
+    if invoice["discount_amount"]:
+        financial_rows.append([Paragraph("DISCOUNT:", normal), Paragraph(f"-{currency} {invoice['discount_amount']:.2f}", normal)])
+    financial_rows.append([Paragraph("TAX:", normal), Paragraph(f"{currency} {invoice['vat_amount']:.2f}", normal)])
+    if invoice["service_amount"]:
+        financial_rows.append([Paragraph("SERVICE:", normal), Paragraph(f"{currency} {invoice['service_amount']:.2f}", normal)])
+    financial_rows.append([Paragraph("<b>TOTAL:</b>", bold), Paragraph(f"<b>{currency} {invoice['total']:.2f}</b>", bold)])
+    financial_table = Table(financial_rows, colWidths=[52 * mm, 20 * mm])
+    financial_table.setStyle(TableStyle([
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1), ("LINEABOVE", (0, -1), (-1, -1), 0.7, colors.black),
+    ]))
+    story.extend([financial_table, Spacer(1, 2 * mm), HRFlowable(width="100%", thickness=0.7, color=colors.black), Spacer(1, 2 * mm)])
+    if method == "CARD":
+        card_label, type_label = "NOT CAPTURED", "CARD"
+    else:
+        card_label, type_label = "NOT CAPTURED", method or "NOT CAPTURED"
+    payment_rows = [
+        [Paragraph("CARD:", normal), Paragraph(escape(card_label), normal)],
+        [Paragraph("TYPE:", normal), Paragraph(escape(type_label), normal)],
+        [Paragraph("ENTRY:", normal), Paragraph("NOT RECORDED", normal)],
+        [Paragraph("TIME:", normal), Paragraph(payment_time_label, normal)],
+        [Paragraph("REF:", normal), Paragraph(escape(payment_reference), normal)],
+        [Paragraph("STATUS:", normal), Paragraph(escape(payment_status), bold)],
+    ]
+    payment_table = Table(payment_rows, colWidths=[20 * mm, 52 * mm])
+    payment_table.setStyle(TableStyle([
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    story.extend([
+        payment_table, Spacer(1, 3 * mm),
+        Paragraph("TIP IS NOT INCLUDED.<br/>PLEASE COME AGAIN!", center),
+        Spacer(1, 4 * mm), Paragraph("THANK YOU FOR DINING WITH US!", center),
+        Spacer(1, 2 * mm),
+    ])
+    barcode = createBarcodeDrawing("Code128", value=str(transaction_id), barHeight=12 * mm, humanReadable=True)
+    barcode.hAlign = "CENTER"
+    story.append(barcode)
     document.build(story)
     return path

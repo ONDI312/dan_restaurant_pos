@@ -206,13 +206,13 @@ export async function POST(request: NextRequest) {
       if (table.rowCount !== 1) throw validationError("The selected table is not available.");
     }
 
-    const order = await client.query<{ id: string }>(
+    const order = await client.query<{ id: string; created_at: Date }>(
       `INSERT INTO orders
        (order_number, order_type, table_id, customer_name, subtotal, currency, discount_pct,
         discount_amount, vat_pct, vat_amount, service_pct, service_amount, total,
         status, kitchen_status, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'open', 'pending', $14)
-       RETURNING id`,
+       RETURNING id, created_at`,
       [
         orderNumber, orderType, orderType === "dine_in" ? tableId : null, customerName || null,
         amount(subtotalCents), currency, discountRate / 100, amount(discountCents),
@@ -249,7 +249,7 @@ export async function POST(request: NextRequest) {
     );
     await client.query("COMMIT");
     return NextResponse.json(
-      { orderId, orderNumber, currency, total: amount(totalCents) },
+      { orderId, orderNumber, currency, total: amount(totalCents), createdAt: order.rows[0].created_at },
       { status: 201 },
     );
   } catch (error) {
