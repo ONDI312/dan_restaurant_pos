@@ -177,6 +177,10 @@ export async function GET(request: NextRequest, context: Context) {
            LEFT JOIN users u ON u.id = o.created_by
            LEFT JOIN restaurant_tables t ON t.id = o.table_id
            WHERE o.status != 'cancelled'
+             AND NOT EXISTS (
+               SELECT 1 FROM invoices removed
+               WHERE removed.order_id = o.id AND removed.deleted_at IS NOT NULL
+             )
            ORDER BY CASE WHEN o.status = 'paid' THEN 1 ELSE 0 END,
                     COALESCE(i.issued_at, o.created_at) DESC LIMIT 500`,
         )).rows;

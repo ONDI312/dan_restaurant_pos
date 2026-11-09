@@ -354,6 +354,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .invoice-search input, .invoice-actions select { min-height: 40px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); }
 .invoice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 230px; }
 .invoice-actions select { max-width: 180px; }
+.invoice-delete-button { min-height: 29px; padding: 0 9px; border: 1px solid #f3c8c0; border-radius: 7px; color: #a23827; background: #fff5f2; font-size: 10px; font-weight: 700; }
+.invoice-delete-button:hover:not(:disabled) { border-color: #df8d7e; background: #ffebe6; }
 
 .dashboard-page { display: grid; gap: 16px; color: #202124; font-family: Inter, "Aptos", "Segoe UI", sans-serif; }
 .dashboard-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

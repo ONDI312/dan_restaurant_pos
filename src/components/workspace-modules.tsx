@@ -19,8 +19,10 @@ type Props = {
   onFinalizePurchase?: (id: number) => Promise<void>;
   canPayInvoices?: boolean;
   canAddInvoiceItems?: boolean;
+  canDeleteInvoices?: boolean;
   onPayInvoice?: (row: Row) => void;
   onAddInvoiceItem?: (orderId: number, productId: number, quantity: number) => Promise<void>;
+  onDeleteInvoice?: (row: Row) => Promise<void>;
   onRefresh: () => void;
 };
 
@@ -146,7 +148,7 @@ function display(value: unknown): string {
   return String(value);
 }
 
-export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, canPayInvoices, canAddInvoiceItems, onPayInvoice, onAddInvoiceItem, onRefresh }: Props) {
+export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, canPayInvoices, canAddInvoiceItems, canDeleteInvoices, onPayInvoice, onAddInvoiceItem, onDeleteInvoice, onRefresh }: Props) {
   const [values, setValues] = useState<Row>({});
   const [editing, setEditing] = useState<number | undefined>();
   const [invoiceSearch, setInvoiceSearch] = useState("");
@@ -246,7 +248,9 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
                 const productId = Number(invoiceProducts[String(row.id)]);
                 void onAddInvoiceItem(orderId, productId, 1).then(() => setInvoiceProducts((current) => ({ ...current, [String(row.id)]: "" }))).catch(() => undefined);
               }}>Add item</button></>}
-              {!isOpen && <span>{row.status === "cancelled" ? "Cancelled" : "Settled"}</span>}
+              {!isOpen && row.status === "paid" && canDeleteInvoices && onDeleteInvoice && Number(row.id) > 0
+                ? <button className="invoice-delete-button" disabled={busy} onClick={() => void onDeleteInvoice(row)}>Delete invoice</button>
+                : !isOpen && <span>{row.status === "cancelled" ? "Cancelled" : "Settled"}</span>}
             </div></td>
           </tr>;
         })}{!filteredRows.length && <tr><td className="empty-row" colSpan={rowsKey.invoice.length + 1}>{rows.length ? "No orders match your search." : "No invoices or orders yet."}</td></tr>}</tbody>

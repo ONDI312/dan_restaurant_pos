@@ -625,6 +625,26 @@ export default function PosApp() {
     }
   }
 
+  async function deleteSettledInvoice(row: Record<string, unknown>) {
+    const invoiceId = Number(row.id);
+    const invoiceNumber = String(row.invoice_number ?? "");
+    if (!Number.isSafeInteger(invoiceId) || invoiceId <= 0) return;
+    const confirmed = window.confirm(
+      `Delete invoice ${invoiceNumber} from the invoice list? The settled order, payment, sales reports, and stock history will remain unchanged. This action will be recorded in the audit log.`,
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      await request(`/api/invoices/${invoiceId}`, { method: "DELETE" });
+      setNotice(`Invoice ${invoiceNumber} was removed. The settled sale and its history remain recorded.`);
+      await loadModule("invoice");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not remove invoice.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function finishReceipt() {
     setReceipt(null);
     setActiveOrder(null);
@@ -908,7 +928,7 @@ export default function PosApp() {
         </section>}
 
         {tab === "invoice" && <section className="page-content">
-          <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} canPayInvoices={can(user.role, "payments.record", user.permissions)} canAddInvoiceItems={can(user.role, "orders.create", user.permissions)} onPayInvoice={openInvoicePayment} onAddInvoiceItem={addInvoiceItem} />
+          <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} canPayInvoices={can(user.role, "payments.record", user.permissions)} canAddInvoiceItems={can(user.role, "orders.create", user.permissions)} canDeleteInvoices={can(user.role, "invoices.delete", user.permissions)} onPayInvoice={openInvoicePayment} onAddInvoiceItem={addInvoiceItem} onDeleteInvoice={deleteSettledInvoice} />
         </section>}
 
         {tab === "reports" && <section className="page-content">
