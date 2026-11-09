@@ -23,16 +23,20 @@ export async function POST(request: NextRequest, context: Context) {
     : "";
   const amount = Number(amountString);
   if (
-    !["cash", "card", "m-pesa", "other"].includes(method) ||
+    !["cash", "card", "m-pesa", "bank-transfer"].includes(method) ||
     !Number.isFinite(amount) ||
     amount <= 0 ||
     amount > 9_999_999_999.99
   ) {
     return NextResponse.json({ error: "Choose a valid payment method and amount." }, { status: 400 });
   }
-  const transactionRef = typeof body?.transactionRef === "string"
+  const transactionRefValue = typeof body?.transactionRef === "string"
     ? body.transactionRef.trim().slice(0, 100)
-    : null;
+    : "";
+  const transactionRef = transactionRefValue || null;
+  if (method === "m-pesa" && !transactionRef) {
+    return NextResponse.json({ error: "Enter the M-Pesa confirmation code." }, { status: 400 });
+  }
 
   const client = await db.connect();
   try {
@@ -48,13 +52,13 @@ export async function POST(request: NextRequest, context: Context) {
     if (order.status === "cancelled" || order.status === "paid") {
       throw validationError("This order cannot accept another payment.");
     }
-    if (method === "m-pesa") {
-      const pending = await client.query(
-        "SELECT id FROM payments WHERE order_id = $1 AND method = 'm-pesa' "
-        + "AND status = 'pending' LIMIT 1",
-        [id],
+    if (method === "m-pesa" && transactionRef) {
+      const duplicate = await client.query(
+        "SELECT id FROM payments WHERE method = 'm-pesa' AND transaction_ref IS NOT NULL "
+        + "AND lower(btrim(transaction_ref)) = lower($1) LIMIT 1",
+        [transactionRef],
       );
-      if (pending.rowCount) throw validationError("This order already has a pending M-Pesa confirmation.");
+      if (duplicate.rowCount) throw validationError("This M-Pesa confirmation code has already been used.");
     }
     const paidResult = await client.query<{ paid: string }>(
       "SELECT COALESCE(SUM(amount_paid), 0) AS paid FROM payments "
@@ -64,16 +68,18 @@ export async function POST(request: NextRequest, context: Context) {
     const moneyCents = (value: string) => Math.round(Number(value) * 100);
     const dueCents = Math.max(moneyCents(order.total) - moneyCents(paidResult.rows[0].paid), 0);
     const paidCents = Math.round(amount * 100);
-    const status = method !== "m-pesa" && paidCents >= dueCents ? "paid" : "pending";
+    if (paidCents > dueCents) throw validationError("Payment amount cannot exceed the remaining balance.");
+    const remainingCents = dueCents - paidCents;
+    const orderPaid = remainingCents === 0;
     const payment = await client.query<{ id: string }>(
       `INSERT INTO payments
        (order_id, method, amount_paid, transaction_ref, status, paid_at)
-       VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'paid' THEN CURRENT_TIMESTAMP ELSE NULL END)
+       VALUES ($1, $2, $3, $4, 'paid', CURRENT_TIMESTAMP)
        RETURNING id`,
-      [id, method, (paidCents / 100).toFixed(2), transactionRef, status],
+      [id, method, (paidCents / 100).toFixed(2), transactionRef],
     );
 
-    if (status === "paid") {
+    if (orderPaid) {
       await client.query("UPDATE orders SET status = 'paid' WHERE id = $1", [id]);
       if (order.table_id) {
         await client.query(
@@ -109,14 +115,32 @@ export async function POST(request: NextRequest, context: Context) {
     await client.query(
       `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
        VALUES ($1, 'record', 'payment', $2, $3)`,
-      [user.id, payment.rows[0].id, JSON.stringify({ orderId: id, method, amount: paidCents / 100, status })],
+      [user.id, payment.rows[0].id, JSON.stringify({
+        orderId: id,
+        method,
+        amount: paidCents / 100,
+        status: orderPaid ? "paid" : "partial",
+      })],
     );
     await client.query("COMMIT");
-    return NextResponse.json({ paymentId: payment.rows[0].id, status });
+    return NextResponse.json({
+      paymentId: payment.rows[0].id,
+      status: orderPaid ? "paid" : "partial",
+      remainingDue: (remainingCents / 100).toFixed(2),
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     if (error instanceof Error && error.name === "ValidationError") {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "23505" &&
+      "constraint" in error &&
+      error.constraint === "idx_payments_mpesa_transaction_ref"
+    ) {
+      return NextResponse.json({ error: "This M-Pesa confirmation code has already been used." }, { status: 409 });
     }
     console.error("Could not record payment.", error);
     return NextResponse.json({ error: "Could not record payment." }, { status: 500 });

@@ -103,6 +103,14 @@ function money(value: string | number, currency: string) {
 const shortDate = (value: string) =>
   new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 
+const paymentMethodLabels: Record<string, string> = {
+  cash: "Cash",
+  card: "Card",
+  "m-pesa": "M-Pesa",
+  "bank-transfer": "Bank transfer",
+};
+const paymentMethodLabel = (method: string) => paymentMethodLabels[method] ?? method;
+
 export default function PosApp() {
   const [user, setUser] = useState<User | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
@@ -128,12 +136,14 @@ export default function PosApp() {
     id: number;
     number: string;
     total: string;
+    remaining: string;
     currency: string;
     tableName: string | null;
   } | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [transactionRef, setTransactionRef] = useState("");
   const [moduleRows, setModuleRows] = useState<Record<string, Record<string, unknown>[]>>({});
   const [moduleExtras, setModuleExtras] = useState<Record<string, Record<string, unknown>>>({});
 
@@ -444,6 +454,7 @@ export default function PosApp() {
         id: result.orderId,
         number: result.orderNumber,
         total: result.total,
+        remaining: result.total,
         currency: result.currency,
         tableName: orderType === "dine_in"
           ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? null
@@ -467,16 +478,13 @@ export default function PosApp() {
     setBusy(true);
     setNotice("");
     try {
-      const result = await request<{ status: string }>(`/api/orders/${activeOrder.id}/payment`, {
+      const result = await request<{ status: "paid" | "partial"; remainingDue: string }>(`/api/orders/${activeOrder.id}/payment`, {
         method: "POST",
-        body: JSON.stringify({ method: paymentMethod, amount: paymentAmount }),
+        body: JSON.stringify({ method: paymentMethod, amount: paymentAmount, transactionRef }),
       });
-      setNotice(result.status === "paid"
-        ? `Payment recorded. Order ${activeOrder.number} is paid.`
-        : paymentMethod === "m-pesa"
-          ? "M-Pesa payment is pending confirmation; no live payment request was sent."
-          : "Payment recorded as pending until the full balance is paid.");
+      setTransactionRef("");
       if (result.status === "paid") {
+        setNotice(`Payment recorded. Order ${activeOrder.number} is paid.`);
         setActiveOrder(null);
         setPaymentDialogOpen(false);
         await Promise.all([
@@ -485,6 +493,12 @@ export default function PosApp() {
           refreshBootstrap(),
           ...(user && ["Admin", "Manager"].includes(user.role) ? [loadDashboard()] : []),
         ]);
+      } else {
+        setNotice(`Payment recorded. Balance remaining: ${money(result.remainingDue, activeOrder.currency)}.`);
+        setActiveOrder((current) => current
+          ? { ...current, remaining: result.remainingDue }
+          : current);
+        setPaymentAmount(result.remainingDue);
       }
 
     } catch (error) {
@@ -576,7 +590,7 @@ export default function PosApp() {
                 <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
                 <strong><span>Table</span>{activeOrder ? activeOrder.tableName ?? "Not selected" : orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
               </div>
-              {activeOrder && <div className="pos-pending-order"><span>Payment due for {activeOrder.number}</span><button type="button" onClick={() => { setPaymentAmount(activeOrder.total); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
+              {activeOrder && <div className="pos-pending-order"><span>Balance due for {activeOrder.number}: {money(activeOrder.remaining, activeOrder.currency)}</span><button type="button" onClick={() => { setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
               <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
               <div className="order-controls">
                 <label>Order type<select value={orderType} onChange={(event) => { setOrderType(event.target.value as "take_away" | "dine_in"); if (event.target.value === "take_away") setTableId(""); }}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select></label>
@@ -605,7 +619,7 @@ export default function PosApp() {
                   <button type="button" className="secondary" disabled={busy || Boolean(activeOrder) || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
                   <button type="button" className="primary" disabled={!cart.length || busy || Boolean(activeOrder)} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
                 </div>
-                <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.total), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>
+                <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.remaining), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>
               </div>
             </aside>
 
@@ -637,10 +651,11 @@ export default function PosApp() {
             <form className="payment-dialog" onSubmit={recordPayment}>
               <button type="button" className="dialog-close" aria-label="Close" onClick={() => setPaymentDialogOpen(false)}>×</button>
               <p className="eyebrow">ORDER {activeOrder.number}</p><h2>Record payment</h2>
-              <div className="payment-total">{money(activeOrder.total, activeOrder.currency)}</div>
-              <label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="m-pesa">M-Pesa (pending)</option><option value="other">Other</option></select></label>
-              <label>Amount paid<input inputMode="decimal" type="number" step="0.01" min="0.01" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} required /></label>
-              {paymentMethod === "m-pesa" && <p className="payment-warning">This records a pending payment only. It will not contact M-Pesa.</p>}
+              <div className="payment-total"><span>Balance due</span><strong>{money(activeOrder.remaining, activeOrder.currency)}</strong></div>
+              <label>Payment method<select value={paymentMethod} onChange={(event) => { setPaymentMethod(event.target.value); setTransactionRef(""); }}><option value="cash">Cash</option><option value="m-pesa">M-Pesa</option><option value="card">Card</option><option value="bank-transfer">Bank transfer</option></select></label>
+              <label>Amount applied<input inputMode="decimal" type="number" step="0.01" min="0.01" max={activeOrder.remaining} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} required /></label>
+              {paymentMethod !== "cash" && <label>{paymentMethod === "m-pesa" ? "M-Pesa confirmation code" : "Transaction reference (optional)"}<input autoComplete="off" maxLength={100} value={transactionRef} onChange={(event) => setTransactionRef(event.target.value)} placeholder={paymentMethod === "m-pesa" ? "Enter the code from the M-Pesa message" : "Enter a receipt or transaction reference"} required={paymentMethod === "m-pesa"} /></label>}
+              {paymentMethod === "m-pesa" && <p className="payment-warning">Verify the payment in M-Pesa, then enter its confirmation code. No payment request is sent from this system.</p>}
               <button className="primary full" disabled={busy}>{busy ? "Recording…" : "Confirm payment"}</button>
             </form>
           </div>
@@ -693,7 +708,7 @@ export default function PosApp() {
         </section>}
 
         {tab === "invoice" && <section className="page-content">
-          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.total, activeOrder.currency)}</span></div><button className="primary" onClick={() => { setTab("pos"); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
+          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.remaining, activeOrder.currency)}</span></div><button className="primary" onClick={() => { setTab("pos"); setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
           <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} />
         </section>}
 
@@ -711,7 +726,7 @@ export default function PosApp() {
             <ReportTable title="Sales by product" headers={["Product", "Qty", "Sales"]} rows={report?.products.map((item) => [item.name, String(item.quantity), money(item.sales, item.currency)]) ?? []} />
             <ReportTable title="Sales by category" headers={["Category", "Qty", "Sales"]} rows={report?.categories.map((item) => [item.name, String(item.quantity), money(item.sales, item.currency)]) ?? []} />
             <ReportTable title="Sales by cashier" headers={["Cashier", "Orders", "Sales"]} rows={report?.cashiers.map((item) => [item.cashier, String(item.order_count), money(item.sales, item.currency)]) ?? []} />
-            <ReportTable title="Payment methods" headers={["Method", "Currency", "Paid"]} rows={report?.payments.map((item) => [item.method, item.currency, money(item.total, item.currency)]) ?? []} />
+            <ReportTable title="Payment methods" headers={["Method", "Currency", "Paid"]} rows={report?.payments.map((item) => [paymentMethodLabel(item.method), item.currency, money(item.total, item.currency)]) ?? []} />
             <ReportTable title="Gross profit by product" headers={["Product", "Currency", "Gross profit"]} rows={report?.profit.map((item) => [item.name, item.currency, money(item.profit, item.currency)]) ?? []} />
           </div>
         </section>}
