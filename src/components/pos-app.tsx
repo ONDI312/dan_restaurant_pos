@@ -47,7 +47,13 @@ type Bootstrap = {
 type Dashboard = {
   sales: { currency: string; order_count: number; total: string }[];
   lowStock: { id: number; name: string; stock_quantity: number; min_stock: number }[];
-  tables: { available: number; occupied: number };
+  tables: { available: number; occupied: number; total: number };
+  counters: { pending: number; in_progress: number; total_orders: number; customers: number; range_revenue: string; paid_orders: number; completed: number };
+  weekly: { day: number; revenue: string; subtotal: string; order_count: number }[];
+  activity: { id: number; order_number: string; total: string; currency: string; status: string; kitchen_status: string; created_at: string; customer_name: string | null; dish_name: string | null; image_path: string | null }[];
+  dishes: { id: number; name: string; image_path: string | null; completed_orders: number }[];
+  currency: string;
+  period: string;
 };
 type Report = {
   sales: { currency: string; order_count: number; total: string }[];
@@ -131,6 +137,7 @@ export default function PosApp() {
   const [customerName, setCustomerName] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [dashboardPeriod, setDashboardPeriod] = useState<"week" | "month">("week");
   const [report, setReport] = useState<Report | null>(null);
   const [fromDate, setFromDate] = useState(() => dateInput(new Date(Date.now() - 29 * 86_400_000)));
   const [toDate, setToDate] = useState(() => dateInput(new Date()));
@@ -213,9 +220,9 @@ export default function PosApp() {
   }, []);
 
   const loadDashboard = useCallback(async () => {
-    const result = await request<Dashboard>("/api/dashboard");
+    const result = await request<Dashboard>(`/api/dashboard?period=${dashboardPeriod}`);
     setDashboard(result);
-  }, []);
+  }, [dashboardPeriod]);
 
   const refreshBootstrap = useCallback(async () => {
     const current = await request<Bootstrap & { user: User }>("/api/bootstrap");
@@ -688,6 +695,19 @@ export default function PosApp() {
     ? can(user.role, item.permission, user.permissions)
     : item.id === "reports" && can(user.role, "reports.view", user.permissions));
   const currentLabel = tab === "dashboard" ? "Dashboard" : moduleLinks.find((item) => item.id === tab)?.label ?? "Workspace";
+  const dashboardDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dashboardDay = new Date().getDay();
+  const chartValues = dashboardDays.map((_, day) => dashboard?.weekly.find((item) => Number(item.day) === day));
+  const maxChartRevenue = Math.max(1, ...chartValues.map((item) => Number(item?.revenue ?? 0)));
+  const tableTotal = Number(dashboard?.tables.total ?? 0);
+  const tableBooked = Number(dashboard?.tables.occupied ?? 0);
+  const bookedPercent = tableTotal ? Math.round(tableBooked / tableTotal * 100) : 0;
+  const completionBase = Number(dashboard?.counters.completed ?? 0) + Number(dashboard?.counters.pending ?? 0);
+  const completionPercent = completionBase ? Math.round(Number(dashboard?.counters.completed ?? 0) / completionBase * 100) : 0;
+  const averageOrderValue = Number(dashboard?.counters.paid_orders ?? 0)
+    ? Number(dashboard?.counters.range_revenue ?? 0) / Number(dashboard?.counters.paid_orders)
+    : 0;
+  const rangeLabel = dashboardPeriod === "week" ? "This Week" : "This Month";
 
   return (
     <main className="app-shell">
@@ -807,20 +827,54 @@ export default function PosApp() {
           </section>
         </div>}
 
-        {tab === "dashboard" && <section className="page-content">
-          <div className="section-heading"><div><h2>Today at a glance</h2><p>Live totals from paid orders in your Neon database.</p></div><button className="secondary" onClick={() => void refreshDashboard()}>↻ Refresh</button></div>
-          <div className="stats-grid">
-            <article className="stat-card"><span className="stat-icon orange">↗</span><small>Today's sales</small>{dashboard?.sales.length ? dashboard.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) : <strong>{money(0, currency)}</strong>}</article>
-            <article className="stat-card"><span className="stat-icon green">▤</span><small>Paid orders</small><strong>{dashboard?.sales.reduce((sum, item) => sum + Number(item.order_count), 0) ?? 0}</strong></article>
-            <article className="stat-card"><span className="stat-icon blue">▦</span><small>Available tables</small><strong>{dashboard?.tables.available ?? 0}</strong></article>
-            <article className="stat-card"><span className="stat-icon red">!</span><small>Low-stock products</small><strong>{dashboard?.lowStock.length ?? 0}</strong></article>
+        {tab === "dashboard" && <section className="dashboard-page">
+          <div className="dashboard-metrics">
+            <article className="dashboard-metric"><div><span className="metric-icon coral">▧</span><span>Pending Orders</span></div><button aria-label="Refresh pending orders" onClick={() => void refreshDashboard()}>↗</button><strong>{Number(dashboard?.counters.pending ?? 0)}</strong><small><b>{completionPercent}%</b> cleared</small></article>
+            <article className="dashboard-metric"><div><span className="metric-icon orange">♨</span><span>Orders in Progress</span></div><button aria-label="Refresh orders in progress" onClick={() => void refreshDashboard()}>↗</button><strong>{Number(dashboard?.counters.in_progress ?? 0)}</strong><small>Preparing or ready</small></article>
+            <article className="dashboard-metric"><div><span className="metric-icon amber">♧</span><span>Available Tables</span></div><button aria-label="Refresh table availability" onClick={() => void refreshDashboard()}>↗</button><strong>{Number(dashboard?.tables.available ?? 0)}<i>/{tableTotal}</i></strong><small><b>{bookedPercent}%</b> booked</small></article>
           </div>
-          <section className="data-card"><div className="section-heading"><div><h2>Needs attention</h2><p>Products at or below their reorder threshold.</p></div></div>
-            <div className="table-scroll"><table><thead><tr><th>Product</th><th>In stock</th><th>Reorder at</th><th>Status</th></tr></thead><tbody>
-              {dashboard?.lowStock.map((item) => <tr key={item.id}><td className="cell-strong">{item.name}</td><td>{item.stock_quantity}</td><td>{item.min_stock}</td><td><span className="status-tag warning">Low stock</span></td></tr>)}
-              {!dashboard?.lowStock.length && <tr><td colSpan={4} className="empty-row">All products are above their low-stock threshold.</td></tr>}
-            </tbody></table></div>
-          </section>
+
+          <div className="dashboard-analysis">
+            <section className="dashboard-card revenue-card">
+              <div className="dashboard-card-heading"><div><h2>Total Revenue</h2><p>Paid orders · {rangeLabel.toLowerCase()}</p></div><div className="dashboard-tools"><label className="period-select"><span>▦</span><select aria-label="Revenue date range" value={dashboardPeriod} onChange={(event) => setDashboardPeriod(event.target.value as "week" | "month")}><option value="week">This Week</option><option value="month">This Month</option></select></label><button className="card-shortcut" aria-label="Refresh revenue chart" onClick={() => void refreshDashboard()}>↗</button></div></div>
+              <div className="revenue-chart" role="img" aria-label={`Revenue by weekday for ${rangeLabel}`}>
+                <div className="chart-axis">{[1, .8, .6, .4, .2, 0].map((mark) => <span key={mark}>{mark ? new Intl.NumberFormat(undefined, { style: "currency", currency: dashboard?.currency ?? currency, notation: "compact", maximumFractionDigits: 1 }).format(maxChartRevenue * mark) : "0"}</span>)}</div>
+                <div className="chart-plot"><div className="chart-gridlines"><i /><i /><i /><i /><i /></div><div className="chart-bars">{chartValues.map((item, day) => {
+                  const value = Number(item?.revenue ?? 0);
+                  const height = value ? Math.max(8, value / maxChartRevenue * 100) : 4;
+                  return <div className={`chart-day ${day === dashboardDay ? "current" : ""}`} key={day}>
+                    <div className="chart-bar-zone"><div className="chart-bar" style={{ height: `${height}%` }} />{day === dashboardDay && <div className="chart-tooltip"><b>{money(value, dashboard?.currency ?? currency)}</b><span>Subtotal {money(Number(item?.subtotal ?? 0), dashboard?.currency ?? currency)}</span></div>}</div>
+                    <span className="chart-day-label">{dashboardDays[day]}</span>
+                  </div>;
+                })}</div></div>
+              </div>
+            </section>
+            <section className="dashboard-card business-card">
+              <div className="dashboard-card-heading"><div><h2>Business Data</h2><p>Activity · {rangeLabel.toLowerCase()}</p></div><label className="period-select"><span>▦</span><select aria-label="Business data date range" value={dashboardPeriod} onChange={(event) => setDashboardPeriod(event.target.value as "week" | "month")}><option value="week">This Week</option><option value="month">This Month</option></select></label></div>
+              <article className="business-strip lavender"><span className="business-icon">♙</span><div><small>Number of Customers</small><strong>{Number(dashboard?.counters.customers ?? 0).toLocaleString()}</strong></div><span className="strip-arrow">↗</span></article>
+              <article className="business-strip peach"><span className="business-icon">▤</span><div><small>Total Orders</small><strong>{Number(dashboard?.counters.total_orders ?? 0).toLocaleString()}</strong></div><span className="strip-arrow">↗</span></article>
+              <article className="business-strip mint"><span className="business-icon">{dashboard?.currency === "JPY" ? "¥" : dashboard?.currency === "KES" ? "KSh" : dashboard?.currency === "EUR" ? "€" : dashboard?.currency === "GBP" ? "£" : "$"}</span><div><small>Average Order Value</small><strong>{money(averageOrderValue, dashboard?.currency ?? currency)}</strong></div></article>
+            </section>
+          </div>
+
+          <div className="dashboard-feeds">
+            <section className="dashboard-card activity-card">
+              <div className="dashboard-card-heading"><div><h2>Recent Activity</h2><p>Latest orders across the restaurant</p></div><button className="card-shortcut" aria-label="Refresh recent activity" onClick={() => void refreshDashboard()}>↗</button></div>
+              <div className="activity-list">{dashboard?.activity.map((item) => {
+                const completed = item.kitchen_status === "completed" || item.status === "paid";
+                const elapsed = Math.max(0, Math.round((Date.now() - new Date(item.created_at).getTime()) / 60_000));
+                return <article className="activity-row" key={item.id}>
+                  <div className="food-thumb round">{item.image_path ? <img src={item.image_path} alt="" /> : <span>🍽</span>}</div>
+                  <div className="activity-copy"><strong>Status Changed</strong><div><span>{money(item.total, item.currency)}</span><span>#{item.order_number.replace(/^ORD-/, "")}</span><span>◷ {elapsed < 60 ? `${elapsed} min` : `${Math.floor(elapsed / 60)} hr`}</span></div></div>
+                  <span className={`activity-status ${completed ? "done" : "waiting"}`}>{completed ? "Completed" : "Pending"}</span>
+                </article>;
+              })}{!dashboard?.activity.length && <div className="dashboard-empty">New orders will appear here.</div>}</div>
+            </section>
+            <section className="dashboard-card dishes-card">
+              <div className="dashboard-card-heading"><div><h2>Top Dishes</h2><p>Most ordered completed dishes</p></div><label className="period-select"><span>▦</span><select aria-label="Top dishes date range" value={dashboardPeriod} onChange={(event) => setDashboardPeriod(event.target.value as "week" | "month")}><option value="week">This Week</option><option value="month">This Month</option></select></label></div>
+              <div className="dish-list">{dashboard?.dishes.map((dish) => <article className="dish-row" key={dish.id}><div className="food-thumb square">{dish.image_path ? <img src={dish.image_path} alt="" /> : <span>🍲</span>}</div><strong>{dish.name}</strong><div className="dish-count"><b>{Number(dish.completed_orders).toLocaleString()}</b><small>Orders</small></div></article>)}{!dashboard?.dishes.length && <div className="dashboard-empty">Completed dish sales will appear here.</div>}</div>
+            </section>
+          </div>
         </section>}
 
         {tab === "kitchen" && <section className="kitchen-page">
