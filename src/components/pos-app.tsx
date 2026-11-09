@@ -118,6 +118,14 @@ const paymentMethodLabels: Record<string, string> = {
   "bank-transfer": "Bank transfer",
 };
 const paymentMethodLabel = (method: string) => paymentMethodLabels[method] ?? method;
+const customerTypes = [
+  "Walk-In Customers",
+  "Regulars",
+  "Reserved / Booking Customers",
+  "Decided / Quick-Service Customers",
+  "High-Maintenance / Demanding Customers",
+  "Special Occasion Diners",
+] as const;
 
 export default function PosApp() {
   const [user, setUser] = useState<User | null>(null);
@@ -134,7 +142,7 @@ export default function PosApp() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [orderType, setOrderType] = useState<"take_away" | "dine_in">("take_away");
   const [tableId, setTableId] = useState("");
-  const [customerName, setCustomerName] = useState("");
+  const [customerName, setCustomerName] = useState<string>(customerTypes[0]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [dashboardPeriod, setDashboardPeriod] = useState<"week" | "month">("week");
@@ -508,7 +516,7 @@ export default function PosApp() {
     if (cart.length && !window.confirm("Discard the current sale items?")) return;
     setCart([]);
     if (resetDetails) {
-      setCustomerName("");
+      setCustomerName(customerTypes[0]);
       setOrderType("take_away");
       setTableId("");
     }
@@ -538,7 +546,7 @@ export default function PosApp() {
       setPaymentDialogOpen(false);
       setReceipt({
         number: result.orderNumber,
-        customer: customerName.trim() || "Walk-in customer",
+        customer: customerName.trim() || customerTypes[0],
         type: orderType === "dine_in" ? "Dine in" : "Take away",
         table: orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "—" : "—",
         lines: cart.map((line) => ({ ...line })),
@@ -547,7 +555,7 @@ export default function PosApp() {
       });
       setCart([]);
       setNotice(`Order ${result.orderNumber} saved. Give the customer their receipt.`);
-      setCustomerName("");
+      setCustomerName(customerTypes[0]);
       setOrderType("take_away");
       setTableId("");
       await refreshPosViews(true);
@@ -575,7 +583,7 @@ export default function PosApp() {
         setPaymentDialogOpen(false);
         setOrderType("take_away");
         setTableId("");
-        setCustomerName("");
+        setCustomerName(customerTypes[0]);
         await refreshPosViews(true);
         if (user && can(user.role, "reports.view", user.permissions)) await refreshDashboard();
         await refreshModule("invoice");
@@ -664,7 +672,7 @@ export default function PosApp() {
       setPaymentDialogOpen(false);
       setOrderType("take_away");
       setTableId("");
-      setCustomerName("");
+      setCustomerName(customerTypes[0]);
       setNotice(`Order ${activeOrder.number} was cancelled.`);
       await refreshPosViews(true);
     } catch (error) {
@@ -762,7 +770,7 @@ export default function PosApp() {
             <aside className="cart-panel">
               <div className="pos-order-meta">
                 <strong><span>Order</span>New order</strong>
-                <strong><span>Customer</span>{customerName.trim() || "Walk-in customer"}</strong>
+                <strong><span>Customer</span>{customerName.trim() || customerTypes[0]}</strong>
                 <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
                 <strong><span>Table</span>{orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
               </div>
@@ -770,7 +778,7 @@ export default function PosApp() {
               <div className="order-controls">
                 <label>Order type<select value={orderType} onChange={(event) => { setOrderType(event.target.value as "take_away" | "dine_in"); if (event.target.value === "take_away") setTableId(""); }}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select></label>
                 {orderType === "dine_in" && <label>Select table<select value={tableId} onChange={(event) => setTableId(event.target.value)}><option value="">Choose available table</option>{bootstrap?.tables.map((table) => <option key={table.id} value={table.id}>{table.table_name} · {table.capacity} seats</option>)}</select></label>}
-                <label className="customer-control">Customer<input aria-label="Customer name" placeholder="Walk-in customer" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /></label>
+                <label className="customer-control">Customer type<select aria-label="Customer type" value={customerName} onChange={(event) => setCustomerName(event.target.value)}>{!customerTypes.includes(customerName as typeof customerTypes[number]) && customerName && <option value={customerName}>Existing: {customerName}</option>}{customerTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
               </div>
               <div className="cart-table-header"><span>Item description</span><span>Qty</span><span>Price</span><span>Total</span><span>Action</span></div>
               <div className="cart-lines">
