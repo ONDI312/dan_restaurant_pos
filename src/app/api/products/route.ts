@@ -22,10 +22,18 @@ export async function GET(request: NextRequest) {
        ORDER BY p.name LIMIT 100`,
       [term, `%${term}%`, categoryId || null],
     );
-    const products = await Promise.all(result.rows.map(async (product) => ({
-      ...product,
-      image_path: await resolveProductImage(product.image_path),
-    })));
+    const products = await Promise.all(result.rows.map(async (product) => {
+      const id = Number(product.id);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error("Product ID cannot be represented safely by the POS.");
+      }
+      return {
+        ...product,
+        id,
+        category_id: Number(product.category_id),
+        image_path: await resolveProductImage(product.image_path),
+      };
+    }));
     return NextResponse.json({ products });
   } catch (error) {
     console.error("Could not load products.", error);

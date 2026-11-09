@@ -111,18 +111,30 @@ export async function POST(request: NextRequest) {
 
   const merged = new Map<number, number>();
   for (const raw of lines) {
-    if (
-      raw === null ||
-      typeof raw !== "object" ||
-      !Number.isSafeInteger(raw.productId) ||
-      raw.productId <= 0 ||
-      !Number.isSafeInteger(raw.quantity) ||
-      raw.quantity < 1 ||
-      raw.quantity > 999
-    ) {
-      return NextResponse.json({ error: "Invalid item quantity." }, { status: 400 });
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return NextResponse.json({ error: "Choose a valid product for each order item." }, { status: 400 });
     }
-    merged.set(raw.productId, (merged.get(raw.productId) ?? 0) + raw.quantity);
+    const item = raw as { productId?: unknown; quantity?: unknown };
+    const productId = typeof item.productId === "number"
+      ? item.productId
+      : typeof item.productId === "string" && /^\d+$/.test(item.productId)
+        ? Number(item.productId)
+        : NaN;
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      return NextResponse.json({ error: "Choose a valid product for each order item." }, { status: 400 });
+    }
+    if (
+      !Number.isSafeInteger(item.quantity) ||
+      typeof item.quantity !== "number" ||
+      item.quantity < 1 ||
+      item.quantity > 999
+    ) {
+      return NextResponse.json(
+        { error: "Each item quantity must be a whole number between 1 and 999." },
+        { status: 400 },
+      );
+    }
+    merged.set(productId, (merged.get(productId) ?? 0) + item.quantity);
   }
   if ([...merged.values()].some((quantity) => quantity > 999)) {
     return NextResponse.json({ error: "Item quantity is too large." }, { status: 400 });
