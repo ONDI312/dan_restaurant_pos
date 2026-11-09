@@ -2,8 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import WorkspaceModules, { type WorkspaceModule } from "@/components/workspace-modules";
+import { can } from "@/lib/permissions";
 
-type User = { id: number; username: string; fullName: string; role: string };
+type User = { id: number; username: string; fullName: string; role: string; permissions?: string[] };
 type Product = {
   id: number;
   name: string;
@@ -19,6 +20,7 @@ type DiningTable = { id: number; table_name: string; capacity: number };
 type Order = {
   id: number;
   order_number: string;
+  table_id?: number | null;
   order_type: string;
   total: string;
   currency: string;
@@ -177,9 +179,31 @@ export default function PosApp() {
     setProducts(result.products);
   }, [search, categoryId]);
 
-  const loadOrders = useCallback(async () => {
-    const result = await request<{ orders: Order[] }>("/api/orders");
-    setOrders(result.orders);
+  const loadPendingOrder = useCallback(async () => {
+    const result = await request<{ order: {
+      id: number;
+      order_number: string;
+      order_type: "dine_in" | "take_away";
+      customer_name: string | null;
+      total: string;
+      currency: string;
+      table_id: number | null;
+      table_name: string | null;
+      remaining_due: string;
+    } | null }>("/api/orders?view=unpaid");
+    if (!result.order) return;
+    setActiveOrder({
+      id: result.order.id,
+      number: result.order.order_number,
+      total: result.order.total,
+      remaining: result.order.remaining_due,
+      currency: result.order.currency,
+      tableName: result.order.table_name,
+    });
+    setPaymentAmount(result.order.remaining_due);
+    setOrderType(result.order.order_type);
+    setTableId(result.order.table_id ? String(result.order.table_id) : "");
+    setCustomerName(result.order.customer_name ?? "");
   }, []);
 
   const loadKitchen = useCallback(async () => {
@@ -204,6 +228,30 @@ export default function PosApp() {
     setReport(result);
   }, [fromDate, toDate]);
 
+  const refreshKitchen = useCallback(async () => {
+    try {
+      await loadKitchen();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets.");
+    }
+  }, [loadKitchen]);
+
+  const refreshDashboard = useCallback(async () => {
+    try {
+      await loadDashboard();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load dashboard.");
+    }
+  }, [loadDashboard]);
+
+  const refreshReport = useCallback(async () => {
+    try {
+      await loadReport();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load reports.");
+    }
+  }, [loadReport]);
+
   const loadModule = useCallback(async (module: WorkspaceModule) => {
     const route: Record<WorkspaceModule, string> = {
       product: "products", category: "categories", inventory: "inventory",
@@ -218,6 +266,29 @@ export default function PosApp() {
     const { rows: _rows, ...extras } = result;
     setModuleExtras((current) => ({ ...current, [module]: extras }));
   }, []);
+
+  const refreshModule = useCallback(async (module: WorkspaceModule) => {
+    try {
+      await loadModule(module);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load module.");
+    }
+  }, [loadModule]);
+
+  const refreshPosViews = useCallback(async (refreshConfiguration: boolean) => {
+    if (!user || !can(user.role, "pos.use", user.permissions)) return;
+    const tasks = [
+      loadProducts().catch((error: unknown) => {
+        setNotice(error instanceof Error ? error.message : "Could not refresh products.");
+      }),
+    ];
+    if (refreshConfiguration) {
+      tasks.push(refreshBootstrap().catch((error: unknown) => {
+        setNotice(error instanceof Error ? error.message : "Could not refresh POS configuration.");
+      }));
+    }
+    await Promise.all(tasks);
+  }, [loadProducts, refreshBootstrap, user]);
 
   const saveModule = useCallback(async (
     module: WorkspaceModule,
@@ -255,8 +326,13 @@ export default function PosApp() {
       saved = true;
       setNotice(`${moduleLinks.find((item) => item.resource === module)?.label ?? "Record"} saved.`);
       await loadModule(module);
-      if (["product", "category", "inventory"].includes(module)) await loadProducts();
-      if (["category", "tables", "settings"].includes(module)) await refreshBootstrap();
+      if (["product", "category", "inventory", "tables", "settings"].includes(module)) {
+        await refreshPosViews(["category", "tables", "settings"].includes(module));
+      }
+      if (module === "users") {
+        const session = await request<{ user: User | null }>("/api/auth/session");
+        setUser(session.user);
+      }
     } catch (error) {
       if (uploadedImageKey && !saved) {
         try {
@@ -273,7 +349,7 @@ export default function PosApp() {
     } finally {
       setBusy(false);
     }
-  }, [loadModule, loadProducts, refreshBootstrap]);
+  }, [loadModule, refreshPosViews]);
 
   const finalizePurchase = useCallback(async (id: number) => {
     setBusy(true);
@@ -284,26 +360,29 @@ export default function PosApp() {
         body: JSON.stringify({ id, action: "finalize" }),
       });
       setNotice(`Purchase #${id} received into inventory.`);
-      await Promise.all([loadModule("purchase"), loadModule("inventory"), loadProducts()]);
+      await refreshModule("purchase");
+      if (user && can(user.role, "inventory.read", user.permissions)) await refreshModule("inventory");
+      await refreshPosViews(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not receive purchase.");
     } finally {
       setBusy(false);
     }
-  }, [loadModule, loadProducts]);
+  }, [refreshModule, refreshPosViews, user]);
 
   const enterApp = useCallback(async (signedInUser: User) => {
     setUser(signedInUser);
     setNotice("");
     try {
-      setTab(
-        signedInUser.role === "Kitchen"
-          ? "kitchen"
-          : ["Admin", "Manager"].includes(signedInUser.role)
-            ? "dashboard"
-            : "pos",
-      );
-      if (signedInUser.role !== "Kitchen") {
+      const landingTab = signedInUser.role === "Kitchen" && can(signedInUser.role, "kitchen.use", signedInUser.permissions)
+        ? "kitchen"
+        : can(signedInUser.role, "reports.view", signedInUser.permissions)
+          ? "dashboard"
+          : can(signedInUser.role, "pos.use", signedInUser.permissions)
+            ? "pos"
+            : moduleLinks.find((item) => item.permission && can(signedInUser.role, item.permission, signedInUser.permissions))?.id ?? "pos";
+      setTab(landingTab);
+      if (can(signedInUser.role, "pos.use", signedInUser.permissions)) {
         await refreshBootstrap();
       }
     } catch (error) {
@@ -328,27 +407,30 @@ export default function PosApp() {
 
   useEffect(() => {
     if (!user || loading) return;
-    if (tab === "pos" && user.role !== "Kitchen") {
+    if (tab === "pos" && can(user.role, "pos.use", user.permissions)) {
       loadProducts().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load products."));
+      if (can(user.role, "payments.record", user.permissions)) {
+        loadPendingOrder().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not restore the pending order."));
+      }
     } else if (tab === "kitchen") {
-      loadKitchen().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets."));
-    } else if (tab === "dashboard" && ["Admin", "Manager"].includes(user.role)) {
-      loadDashboard().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load dashboard."));
-    } else if (tab === "reports" && ["Admin", "Manager"].includes(user.role)) {
-      loadReport().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load reports."));
+      void refreshKitchen();
+    } else if (tab === "dashboard" && can(user.role, "reports.view", user.permissions)) {
+      void refreshDashboard();
+    } else if (tab === "reports" && can(user.role, "reports.view", user.permissions)) {
+      void refreshReport();
     } else {
       const module = moduleLinks.find((item) => item.id === tab)?.resource;
-      if (module) loadModule(module).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load module."));
+      if (module) void refreshModule(module);
     }
-  }, [loadDashboard, loadKitchen, loadModule, loadProducts, loadReport, loading, tab, user]);
+  }, [loadPendingOrder, loadProducts, loading, refreshDashboard, refreshKitchen, refreshModule, refreshReport, tab, user]);
 
   useEffect(() => {
     if (!user || loading || tab !== "kitchen") return;
     const interval = window.setInterval(() => {
-      loadKitchen().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets."));
+      void refreshKitchen();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [loadKitchen, loading, tab, user]);
+  }, [loading, refreshKitchen, tab, user]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -464,7 +546,7 @@ export default function PosApp() {
       setPaymentDialogOpen(openPayment);
       setCart([]);
       setNotice(`Order ${result.orderNumber} saved. Record payment to complete it.`);
-      await Promise.all([loadProducts(), loadOrders(), refreshBootstrap()]);
+      await refreshPosViews(true);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save order.");
     } finally {
@@ -487,12 +569,11 @@ export default function PosApp() {
         setNotice(`Payment recorded. Order ${activeOrder.number} is paid.`);
         setActiveOrder(null);
         setPaymentDialogOpen(false);
-        await Promise.all([
-          loadProducts(),
-          loadOrders(),
-          refreshBootstrap(),
-          ...(user && ["Admin", "Manager"].includes(user.role) ? [loadDashboard()] : []),
-        ]);
+        setOrderType("take_away");
+        setTableId("");
+        setCustomerName("");
+        await refreshPosViews(true);
+        if (user && can(user.role, "reports.view", user.permissions)) await refreshDashboard();
       } else {
         setNotice(`Payment recorded. Balance remaining: ${money(result.remainingDue, activeOrder.currency)}.`);
         setActiveOrder((current) => current
@@ -508,12 +589,32 @@ export default function PosApp() {
     }
   }
 
+  async function cancelOrder() {
+    if (!activeOrder || !window.confirm(`Cancel order ${activeOrder.number}? This cannot be undone.`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await request(`/api/orders/${activeOrder.id}/cancel`, { method: "POST" });
+      setActiveOrder(null);
+      setPaymentDialogOpen(false);
+      setOrderType("take_away");
+      setTableId("");
+      setCustomerName("");
+      setNotice(`Order ${activeOrder.number} was cancelled.`);
+      await refreshPosViews(true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not cancel order.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function advanceTicket(order: Order) {
     setBusy(true);
     setNotice("");
     try {
       await request(`/api/kitchen/${order.id}`, { method: "POST" });
-      await loadKitchen();
+      await refreshKitchen();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not update kitchen ticket.");
     } finally {
@@ -545,13 +646,10 @@ export default function PosApp() {
     );
   }
 
-  const canReports = ["Admin", "Manager"].includes(user.role);
-  const visibleModules = moduleLinks.filter((item) => {
-    if (user.role === "Admin") return true;
-    if (user.role === "Manager") return item.id !== "users";
-    if (user.role === "Kitchen") return item.id === "kitchen";
-    return ["pos", "product", "category", "tables", "invoice"].includes(item.id);
-  });
+  const canReports = can(user.role, "reports.view", user.permissions);
+  const visibleModules = moduleLinks.filter((item) => item.permission
+    ? can(user.role, item.permission, user.permissions)
+    : item.id === "reports" && can(user.role, "reports.view", user.permissions));
   const currentLabel = tab === "dashboard" ? "Dashboard" : moduleLinks.find((item) => item.id === tab)?.label ?? "Workspace";
 
   return (
@@ -590,7 +688,7 @@ export default function PosApp() {
                 <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
                 <strong><span>Table</span>{activeOrder ? activeOrder.tableName ?? "Not selected" : orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
               </div>
-              {activeOrder && <div className="pos-pending-order"><span>Balance due for {activeOrder.number}: {money(activeOrder.remaining, activeOrder.currency)}</span><button type="button" onClick={() => { setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
+              {activeOrder && <div className="pos-pending-order"><span>Balance due for {activeOrder.number}: {money(activeOrder.remaining, activeOrder.currency)}</span><div>{can(user.role, "payments.record", user.permissions) && <button type="button" onClick={() => { setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button>}{can(user.role, "orders.cancel", user.permissions) && Number(activeOrder.remaining) === Number(activeOrder.total) && <button type="button" onClick={() => void cancelOrder()} disabled={busy}>Cancel order</button>}</div></div>}
               <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
               <div className="order-controls">
                 <label>Order type<select value={orderType} onChange={(event) => { setOrderType(event.target.value as "take_away" | "dine_in"); if (event.target.value === "take_away") setTableId(""); }}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select></label>
@@ -619,7 +717,7 @@ export default function PosApp() {
                   <button type="button" className="secondary" disabled={busy || Boolean(activeOrder) || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
                   <button type="button" className="primary" disabled={!cart.length || busy || Boolean(activeOrder)} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
                 </div>
-                <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.remaining), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>
+                {can(user.role, "payments.record", user.permissions) && <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.remaining), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>}
               </div>
             </aside>
 
@@ -662,7 +760,7 @@ export default function PosApp() {
         )}
 
         {tab === "dashboard" && <section className="page-content">
-          <div className="section-heading"><div><h2>Today at a glance</h2><p>Live totals from paid orders in your Neon database.</p></div><button className="secondary" onClick={() => loadDashboard()}>↻ Refresh</button></div>
+          <div className="section-heading"><div><h2>Today at a glance</h2><p>Live totals from paid orders in your Neon database.</p></div><button className="secondary" onClick={() => void refreshDashboard()}>↻ Refresh</button></div>
           <div className="stats-grid">
             <article className="stat-card"><span className="stat-icon orange">↗</span><small>Today's sales</small>{dashboard?.sales.length ? dashboard.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) : <strong>{money(0, currency)}</strong>}</article>
             <article className="stat-card"><span className="stat-icon green">▤</span><small>Paid orders</small><strong>{dashboard?.sales.reduce((sum, item) => sum + Number(item.order_count), 0) ?? 0}</strong></article>
@@ -678,12 +776,12 @@ export default function PosApp() {
         </section>}
 
         {tab === "kitchen" && <section className="kitchen-page">
-          <div className="kitchen-title"><h2>Kitchen orders display</h2><button className="secondary" onClick={() => loadKitchen()}>↻ Refresh</button></div>
+          <div className="kitchen-title"><h2>Kitchen orders display</h2><button className="secondary" onClick={() => void refreshKitchen()}>↻ Refresh</button></div>
           <div className="kitchen-board">
             {([
               ["pending", "New orders", "New"],
-              ["preparing", "Accepted orders", "Processing"],
-              ["ready", "Completed orders", "Done"],
+              ["preparing", "Preparing orders", "Processing"],
+              ["ready", "Ready for pickup", "Ready"],
               ["completed", "Delivered orders", "Delivered"],
             ] as const).map(([status, title, displayStatus]) => {
               const laneOrders = orders.filter((order) => order.kitchen_status === status);
@@ -708,13 +806,13 @@ export default function PosApp() {
         </section>}
 
         {tab === "invoice" && <section className="page-content">
-          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.remaining, activeOrder.currency)}</span></div><button className="primary" onClick={() => { setTab("pos"); setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
+          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.remaining, activeOrder.currency)}</span></div>{can(user.role, "payments.record", user.permissions) && <button className="primary" onClick={() => { setTab("pos"); setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button>}</div>}
           <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} />
         </section>}
 
         {tab === "reports" && <section className="page-content">
           <div className="section-heading"><div><h2>Sales performance</h2><p>Compare sales, expenses, and gross profit by currency.</p></div>
-            <div className="date-filter"><label>From<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>To<input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary" onClick={() => loadReport()}>Apply</button></div>
+            <div className="date-filter"><label>From<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>To<input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary" onClick={() => void refreshReport()}>Apply</button></div>
           </div>
           <div className="stats-grid report-stats">
             <article className="stat-card"><small>Sales</small>{report?.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) ?? <strong>—</strong>}</article>
@@ -737,11 +835,23 @@ export default function PosApp() {
             module={item.resource}
             rows={moduleRows[item.resource] ?? []}
             extras={moduleExtras[item.resource] ?? {}}
-            canManage={user.role === "Admin" || (user.role === "Manager" && !["settings", "users"].includes(item.resource))}
+            canManage={can(user.role, ({
+              product: "catalog.manage",
+              category: "catalog.manage",
+              inventory: "inventory.manage",
+              supplier: "suppliers.manage",
+              purchase: "purchases.manage",
+              tables: "tables.manage",
+              expense: "expenses.manage",
+              users: "users.manage",
+              settings: "settings.manage",
+              invoice: "",
+              audit: "",
+            } satisfies Record<WorkspaceModule, string>)[item.resource], user.permissions)}
             busy={busy}
             onSave={saveModule}
             onFinalizePurchase={item.id === "purchase" ? finalizePurchase : undefined}
-            onRefresh={() => loadModule(item.resource!)}
+            onRefresh={() => void refreshModule(item.resource!)}
           />
         ))}
       </section>

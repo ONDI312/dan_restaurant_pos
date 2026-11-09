@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authorize, isResponse, requestJson, validationError } from "@/lib/api";
 import { db } from "@/lib/db";
 import { deleteProductImage, isProductImageKey, resolveProductImage } from "@/lib/product-images";
+import { can, permissionCatalog, permissionsForRole } from "@/lib/permissions";
 import { requireSameOrigin } from "@/lib/session";
 
 type Context = { params: Promise<{ module: string }> };
@@ -59,6 +60,24 @@ function validImageUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function userPermissions(body: Body): { customized: boolean; permissions: string[] } {
+  if (body.customPermissions !== true) return { customized: false, permissions: [] };
+  if (!Array.isArray(body.permissions) || body.permissions.some((value) => typeof value !== "string")) {
+    throw validationError("Choose valid user privileges.");
+  }
+  const allowed = new Set<string>(permissionCatalog.map((permission) => permission.key));
+  const permissions = [...new Set(body.permissions as string[])];
+  if (permissions.some((permission) => !allowed.has(permission))) {
+    throw validationError("One or more selected privileges are invalid.");
+  }
+  return { customized: true, permissions };
+}
+
+function canAssignRole(actor: { role: string; permissions?: string[] }, assigned: string[]) {
+  const actorPermissions = actor.permissions ?? permissionsForRole(actor.role);
+  return assigned.every((permission) => can(actor.role, permission, actorPermissions));
 }
 
 async function writeAudit(userId: number, action: string, entity: string, id: number | string, details: object) {
@@ -132,8 +151,14 @@ export async function GET(request: NextRequest, context: Context) {
       case "users":
         rows = (await db.query(
           `SELECT u.id, u.username, u.full_name, u.role_id, r.name AS role_name,
-                  u.is_active, u.last_login FROM users u JOIN roles r ON r.id = u.role_id
-           ORDER BY u.username`,
+                  u.is_active, u.permissions_customized, u.last_login,
+                  COALESCE(array_agg(up.permission_name) FILTER (WHERE up.permission_name IS NOT NULL), '{}') AS permissions,
+                  CASE WHEN u.permissions_customized
+                    THEN COALESCE(string_agg(up.permission_name, ', ' ORDER BY up.permission_name), 'No privileges')
+                    ELSE 'Role defaults' END AS privilege_summary
+           FROM users u JOIN roles r ON r.id = u.role_id
+           LEFT JOIN user_permissions up ON up.user_id = u.id
+           GROUP BY u.id, r.name ORDER BY u.username`,
         )).rows;
         break;
       case "settings":
@@ -162,7 +187,11 @@ export async function GET(request: NextRequest, context: Context) {
     if (module === "purchases") extras.suppliers = (await db.query("SELECT id, name FROM suppliers WHERE is_active = TRUE ORDER BY name")).rows;
     if (module === "purchases") extras.products = (await db.query("SELECT id, name, cost_price, stock_quantity FROM products WHERE is_available = TRUE ORDER BY name")).rows;
     if (module === "expenses") extras.categories = (await db.query("SELECT id, name FROM expense_categories ORDER BY name")).rows;
-    if (module === "users") extras.roles = (await db.query("SELECT id, name FROM roles ORDER BY name")).rows;
+    if (module === "users") {
+      const roles = (await db.query<{ id: number; name: string }>("SELECT id, name FROM roles ORDER BY name")).rows;
+      extras.roles = roles.map((role) => ({ ...role, permissions: permissionsForRole(role.name) }));
+      extras.permissions = permissionCatalog;
+    }
     return NextResponse.json({ rows: rows ?? [], ...extras });
   } catch (error) {
     console.error(`Could not load ${module} module.`, error);
@@ -381,13 +410,43 @@ export async function POST(request: NextRequest, context: Context) {
         const fullName = text(body, "fullName", true, 120);
         const roleId = integer(body, "roleId", 1);
         const pin = text(body, "pin", true, 32);
+        const assigned = userPermissions(body);
         if (!/^\d{4,32}$/.test(pin)) throw validationError("PIN must contain 4–32 digits.");
-        const result = await db.query<{ id: number }>(
-          "INSERT INTO users (username, full_name, role_id, pin_hash) VALUES ($1, $2, $3, $4) RETURNING id",
-          [username, fullName, roleId, await argon2.hash(pin)],
-        );
-        await writeAudit(user.id, "create", "user", result.rows[0].id, { username });
-        return NextResponse.json({ id: result.rows[0].id }, { status: 201 });
+        const role = await db.query<{ name: string }>("SELECT name FROM roles WHERE id = $1", [roleId]);
+        if (!role.rows[0]) throw validationError("Choose a valid user role.");
+        const effectivePermissions = assigned.customized
+          ? assigned.permissions
+          : permissionsForRole(role.rows[0].name);
+        if (!canAssignRole(user, effectivePermissions)) {
+          throw validationError("You cannot assign privileges you do not have.");
+        }
+        const client = await db.connect();
+        try {
+          await client.query("BEGIN");
+          const result = await client.query<{ id: number }>(
+            `INSERT INTO users (username, full_name, role_id, pin_hash, permissions_customized)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [username, fullName, roleId, await argon2.hash(pin), assigned.customized],
+          );
+          if (assigned.permissions.length) {
+            await client.query(
+              "INSERT INTO user_permissions (user_id, permission_name) "
+              + "SELECT $1, assigned.permission_name FROM unnest($2::text[]) AS assigned(permission_name)",
+              [result.rows[0].id, assigned.permissions],
+            );
+          }
+          await client.query(
+            "INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details) VALUES ($1, 'create', 'user', $2, $3)",
+            [user.id, result.rows[0].id, JSON.stringify({ username, customPermissions: assigned.customized, permissions: assigned.permissions })],
+          );
+          await client.query("COMMIT");
+          return NextResponse.json({ id: result.rows[0].id }, { status: 201 });
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
       }
       default:
         return NextResponse.json({ error: "This module is read-only." }, { status: 403 });
@@ -500,16 +559,56 @@ export async function PATCH(request: NextRequest, context: Context) {
         );
         break;
       case "users":
-        result = await db.query(
-          "UPDATE users SET full_name=$1, role_id=$2, is_active=$3 WHERE id=$4",
-          [text(body, "fullName", true, 120), integer(body, "roleId", 1), body.active !== false, id],
-        );
+        {
+          const assigned = userPermissions(body);
+          const roleId = integer(body, "roleId", 1);
+          const role = await db.query<{ name: string }>("SELECT name FROM roles WHERE id = $1", [roleId]);
+          if (!role.rows[0]) throw validationError("Choose a valid user role.");
+          const effectivePermissions = assigned.customized
+            ? assigned.permissions
+            : permissionsForRole(role.rows[0].name);
+          if (!canAssignRole(user, effectivePermissions)) {
+            throw validationError("You cannot assign privileges you do not have.");
+          }
+          if (id === user.id && (body.active === false || !effectivePermissions.includes("users.manage"))) {
+            throw validationError("You cannot deactivate yourself or remove your own user-management access.");
+          }
+          const client = await db.connect();
+          try {
+            await client.query("BEGIN");
+            result = await client.query(
+              `UPDATE users SET full_name=$1, role_id=$2, is_active=$3, permissions_customized=$4
+               WHERE id=$5`,
+              [text(body, "fullName", true, 120), roleId, body.active !== false, assigned.customized, id],
+            );
+            if (result.rowCount === 1) {
+              await client.query("DELETE FROM user_permissions WHERE user_id = $1", [id]);
+              if (assigned.permissions.length) {
+                await client.query(
+                  "INSERT INTO user_permissions (user_id, permission_name) "
+                  + "SELECT $1, assigned.permission_name FROM unnest($2::text[]) AS assigned(permission_name)",
+                  [id, assigned.permissions],
+                );
+              }
+              await client.query(
+                "INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details) VALUES ($1, 'update', 'user', $2, $3)",
+                [user.id, id, JSON.stringify({ customPermissions: assigned.customized, permissions: assigned.permissions })],
+              );
+            }
+            await client.query("COMMIT");
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          } finally {
+            client.release();
+          }
+        }
         break;
       default:
         return NextResponse.json({ error: "Updates are not available for this module." }, { status: 403 });
     }
     if (result.rowCount !== 1) return NextResponse.json({ error: "Record was not found." }, { status: 404 });
-    await writeAudit(user.id, "update", module, id, { updated: true });
+    if (module !== "users") await writeAudit(user.id, "update", module, id, { updated: true });
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof Error && error.name === "ValidationError") {

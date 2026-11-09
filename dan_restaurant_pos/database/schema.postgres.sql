@@ -24,8 +24,15 @@ CREATE TABLE IF NOT EXISTS users (
     role_id BIGINT NOT NULL REFERENCES roles(id),
     pin_hash TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    permissions_customized BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission_name TEXT NOT NULL,
+    PRIMARY KEY (user_id, permission_name)
 );
 
 CREATE TABLE IF NOT EXISTS categories (

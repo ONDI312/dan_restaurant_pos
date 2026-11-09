@@ -4,7 +4,7 @@ Restaurant point-of-sale system with a browser-based web app for Vercel and a Wi
 
 ## Web app
 
-The Next.js web app includes PIN login, role-based access, a role-appropriate landing page (Dashboard for administrators and managers, POS for other staff, and KOT for kitchen staff), POS checkout, product and category management, inventory adjustments, suppliers and purchases, expenses, tables, user and settings management, invoices, audit history, kitchen tickets, and sales reports. Product photos upload to a private Neon Object Storage bucket and are served with short-lived signed URLs.
+The Next.js web app includes PIN login, role-based access with optional per-user privilege assignments, a role-appropriate landing page (Dashboard for administrators and managers, POS for other staff, and KOT for kitchen staff), POS checkout, product and category management, inventory adjustments, suppliers and purchases, expenses, tables, user and settings management, invoices, audit history, kitchen tickets, and sales reports. Product photos upload to a private Neon Object Storage bucket and are served with short-lived signed URLs.
 
 Product photos must be JPEG, PNG, or WebP and no larger than 4 MB. Payment methods are cash, M-Pesa, card, and bank transfer. M-Pesa is recorded manually: verify the transaction outside the app and enter its confirmation code; the app does not initiate or simulate live transactions. Partial payments reduce the remaining balance, and inventory is deducted when the order is fully paid.
 
@@ -13,7 +13,7 @@ Product photos must be JPEG, PNG, or WebP and no larger than 4 MB. Payment metho
 1. Import `ONDI312/dan_restaurant_pos` in Vercel.
 2. Set **Root Directory** to the repository root (`.`), not `dan_restaurant_pos`.
 3. Use the **Next.js** framework preset. Keep the default build/output settings; the build command is `npm run build`.
-4. For a fresh database, apply [`migrations/20261109_vercel_web.sql`](./migrations/20261109_vercel_web.sql), [`migrations/20261109_workspace_modules.sql`](./migrations/20261109_workspace_modules.sql), and [`migrations/20261109_payment_workflow.sql`](./migrations/20261109_payment_workflow.sql) to the production Neon branch. All three are already applied to this project's production branch.
+4. For a fresh database, apply [`migrations/20261109_vercel_web.sql`](./migrations/20261109_vercel_web.sql), [`migrations/20261109_workspace_modules.sql`](./migrations/20261109_workspace_modules.sql), [`migrations/20261109_payment_workflow.sql`](./migrations/20261109_payment_workflow.sql), and [`migrations/20261109_user_permissions.sql`](./migrations/20261109_user_permissions.sql) to the production Neon branch. The first three are already applied to this project's production branch.
 5. Run `neon deploy --branch production` from the linked project root to provision the private product-photo bucket declared in `neon.ts`.
 6. Pull the production storage variables locally with `neon env pull --branch production --file .env.production.local --service object-storage`. Add these values to Vercel without committing or sharing the local env file.
 7. Add these Vercel environment variables for each deployment that uses the production Neon branch:

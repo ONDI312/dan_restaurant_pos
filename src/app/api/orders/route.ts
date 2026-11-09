@@ -24,7 +24,11 @@ function amount(centsValue: number): string {
 
 export async function GET(request: NextRequest) {
   const kitchenView = request.nextUrl.searchParams.get("view") === "kitchen";
-  const user = await authorize(request, kitchenView ? "kitchen.use" : "invoices.view");
+  const unpaidView = request.nextUrl.searchParams.get("view") === "unpaid";
+  const user = await authorize(
+    request,
+    kitchenView ? "kitchen.use" : unpaidView ? "payments.record" : "invoices.view",
+  );
   if (isResponse(user)) return user;
   try {
     if (kitchenView) {
@@ -33,7 +37,11 @@ export async function GET(request: NextRequest) {
                 t.table_name
          FROM orders o LEFT JOIN restaurant_tables t ON t.id = o.table_id
          WHERE o.status != 'cancelled'
-         ORDER BY o.created_at, o.id LIMIT 200`,
+         ORDER BY CASE WHEN o.kitchen_status = 'completed' THEN 1 ELSE 0 END,
+                  CASE WHEN o.kitchen_status != 'completed' THEN o.created_at END ASC,
+                  CASE WHEN o.kitchen_status = 'completed' THEN o.created_at END DESC,
+                  o.id ASC
+         LIMIT 200`,
       );
       const orders = await Promise.all(tickets.rows.map(async (ticket) => {
         const items = await db.query(
@@ -45,6 +53,21 @@ export async function GET(request: NextRequest) {
         return { ...ticket, items: items.rows };
       }));
       return NextResponse.json({ orders });
+    }
+    if (unpaidView) {
+      const result = await db.query(
+        `SELECT o.id, o.order_number, o.order_type, o.customer_name, o.total, o.currency,
+                o.table_id, t.table_name,
+                (o.total - COALESCE((SELECT SUM(p.amount_paid) FROM payments p
+                  WHERE p.order_id = o.id AND p.status = 'paid'), 0)) AS remaining_due
+         FROM orders o LEFT JOIN restaurant_tables t ON t.id = o.table_id
+         WHERE o.created_by = $1 AND o.status NOT IN ('cancelled', 'paid')
+           AND o.total > COALESCE((SELECT SUM(p.amount_paid) FROM payments p
+             WHERE p.order_id = o.id AND p.status = 'paid'), 0)
+         ORDER BY o.created_at DESC, o.id DESC LIMIT 1`,
+        [user.id],
+      );
+      return NextResponse.json({ order: result.rows[0] ?? null });
     }
     const result = await db.query(
       `SELECT o.id, o.order_number, o.order_type, o.customer_name, o.total, o.currency, o.status,

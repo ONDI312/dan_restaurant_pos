@@ -43,8 +43,9 @@ export async function POST(request: NextRequest) {
       full_name: string;
       pin_hash: string;
       role_name: string;
+      permissions_customized: boolean;
     }>(
-      "SELECT u.id, u.username, u.full_name, u.pin_hash, r.name AS role_name "
+      "SELECT u.id, u.username, u.full_name, u.pin_hash, r.name AS role_name, u.permissions_customized "
       + "FROM users u JOIN roles r ON r.id = u.role_id "
       + "WHERE u.username = $1 AND u.is_active = TRUE",
       [username],
@@ -86,11 +87,18 @@ export async function POST(request: NextRequest) {
     await client.query("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1", [account.id]);
     await client.query("COMMIT");
 
+    const assigned = account.permissions_customized
+      ? await client.query<{ permission_name: string }>(
+        "SELECT permission_name FROM user_permissions WHERE user_id = $1 ORDER BY permission_name",
+        [account.id],
+      )
+      : null;
     const user = {
       id: Number(account.id),
       username: account.username,
       fullName: account.full_name,
       role: account.role_name,
+      ...(assigned ? { permissions: assigned.rows.map((row) => row.permission_name) } : {}),
     };
     const token = await createSession(user);
     const response = NextResponse.json({ user });

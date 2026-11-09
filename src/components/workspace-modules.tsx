@@ -7,7 +7,8 @@ export type WorkspaceModule =
   | "tables" | "expense" | "users" | "settings" | "invoice" | "audit";
 
 type Row = Record<string, unknown>;
-type Option = { id: number; name: string };
+type Option = { id: number; name: string; permissions?: string[] };
+type Permission = { key: string; label: string };
 type Props = {
   module: WorkspaceModule;
   rows: Row[];
@@ -50,7 +51,7 @@ const rowsKey: Record<WorkspaceModule, string[]> = {
   purchase: ["invoice_ref", "supplier_name", "total_amount", "status", "created_at"],
   tables: ["table_name", "capacity", "status", "is_active"],
   expense: ["description", "category", "amount", "currency", "method", "created_at"],
-  users: ["username", "full_name", "role_name", "is_active", "last_login"],
+  users: ["username", "full_name", "role_name", "privilege_summary", "is_active", "last_login"],
   settings: ["key", "value"],
   invoice: ["invoice_number", "order_number", "issued_at", "total", "currency", "status", "cashier"],
   audit: ["action", "entity_type", "entity_id", "username", "created_at", "details"],
@@ -67,6 +68,7 @@ const labels: Record<string, string> = {
   last_login: "Last sign in", key: "Setting", value: "Value", invoice_number: "Invoice",
   order_number: "Order", issued_at: "Issued", total: "Total", cashier: "Cashier",
   action: "Action", entity_type: "Entity", entity_id: "Record", details: "Details",
+  privilege_summary: "Privileges",
 };
 
 function options(extras: Record<string, unknown>, key: string): Option[] {
@@ -124,9 +126,10 @@ function fieldsFor(module: WorkspaceModule, extras: Record<string, unknown>, edi
       { key: "method", label: "Payment method" },
     ];
     case "users": return [
-      { key: "username", label: "Username", required: true }, { key: "fullName", label: "Full name", required: true },
+      ...(!editing ? [{ key: "username", label: "Username", required: true }] : []),
+      { key: "fullName", label: "Full name", required: true },
       { key: "roleId", label: "Role", type: "select", required: true, options: options(extras, "roles") },
-      { key: "pin", label: "Temporary PIN (4–32 digits)", type: "password", required: true },
+      ...(!editing ? [{ key: "pin", label: "Temporary PIN (4–32 digits)", type: "password" as const, required: true }] : []),
     ];
     default: return [];
   }
@@ -158,8 +161,22 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
         description: "description", barcode: "barcode", fullName: "full_name", roleId: "role_id",
         email: "email", phone: "phone", address: "address",
       };
+      if (field.key === "roleId" && module === "users") {
+        mapped.roleId = String(row.role_id ?? "");
+        continue;
+      }
       const key = source[field.key] ?? field.key;
       mapped[field.key] = row[key] == null ? "" : String(row[key]);
+    }
+    if (module === "users") {
+      const customized = row.permissions_customized === true;
+      const roles = options(extras, "roles");
+      const selectedRole = roles.find((role) => Number(role.id) === Number(row.role_id));
+      mapped.customPermissions = customized;
+      mapped.permissions = customized
+        ? Array.isArray(row.permissions) ? row.permissions : []
+        : selectedRole?.permissions ?? [];
+      mapped.active = row.is_active !== false;
     }
     if (module === "product") mapped.currentImageUrl = String(row.image_url ?? "");
     setValues(mapped);
@@ -220,18 +237,51 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
           </label>;
           if (field.type === "select") {
             const choices = field.choices ?? field.options?.map((option) => ({ value: String(option.id), label: option.name })) ?? [];
-            return <label key={field.key}>{field.label}<select value={value} required={field.required} onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))}>
+            return <label key={field.key}>{field.label}<select value={value} required={field.required} onChange={(event) => {
+              const nextValue = event.target.value;
+              if (module === "users" && field.key === "roleId" && values.customPermissions !== true) {
+                const role = field.options?.find((option) => String(option.id) === nextValue);
+                setValues((current) => ({ ...current, roleId: nextValue, permissions: role?.permissions ?? [] }));
+              } else {
+                setValues((current) => ({ ...current, [field.key]: nextValue }));
+              }
+            }}>
               <option value="">Select…</option>{choices.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select></label>;
           }
           if (field.type === "textarea") return <label className="span-all" key={field.key}>{field.label}<textarea value={value} required={field.required} onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))} /></label>;
           return <label key={field.key}>{field.label}<input type={field.type ?? "text"} min={field.type === "number" ? "0" : undefined} step={field.type === "number" && ["cost", "price", "amount"].includes(field.key) ? "0.01" : "1"} value={value} required={field.required} onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))} /></label>;
         })}</div>
+        {module === "users" && <>
+          {editing !== undefined && <label className="user-active-toggle">
+            <input type="checkbox" checked={values.active !== false} onChange={(event) => setValues((current) => ({ ...current, active: event.target.checked }))} />
+            Account active
+          </label>}
+          <label className="user-active-toggle">
+            <input type="checkbox" checked={values.customPermissions === true} onChange={(event) => setValues((current) => ({ ...current, customPermissions: event.target.checked }))} />
+            Set custom privileges instead of role defaults
+          </label>
+          {values.customPermissions === true && <fieldset className="permission-picker">
+            <legend>Allowed actions for this user</legend>
+            {(Array.isArray(extras.permissions) ? extras.permissions as Permission[] : []).map((permission) => {
+              const selected = Array.isArray(values.permissions) ? values.permissions as string[] : [];
+              return <label key={permission.key}>
+                <input type="checkbox" checked={selected.includes(permission.key)} onChange={(event) => {
+                  const next = event.target.checked
+                    ? [...selected, permission.key]
+                    : selected.filter((item) => item !== permission.key);
+                  setValues((current) => ({ ...current, permissions: next }));
+                }} />
+                {permission.label}
+              </label>;
+            })}
+          </fieldset>}
+        </>}
         {module === "product" && typeof values.currentImageUrl === "string" && values.currentImageUrl
           && <div className="current-product-photo"><span>Current photo</span><img src={values.currentImageUrl} alt="Current product" /></div>}
         <div className="form-actions"><button className="primary" disabled={busy}>{busy ? "Saving…" : editing ? "Update" : "Save"}</button><button type="button" className="secondary" onClick={reset}>Clear</button></div>
       </form>}
-      <section className="data-card module-table"><RowsTable rows={rows} keys={rowsKey[module]} onEdit={canManage && ["product", "category", "supplier", "tables"].includes(module) ? selectRow : undefined} />
+      <section className="data-card module-table"><RowsTable rows={rows} keys={rowsKey[module]} onEdit={canManage && ["product", "category", "supplier", "tables", "users"].includes(module) ? selectRow : undefined} />
         {module === "purchase" && <div className="module-hint">New purchases are saved as drafts. Finalize them to receive stock into inventory.</div>}
         {module === "purchase" && onFinalizePurchase && <div className="purchase-actions">{rows.filter((row) => row.status === "draft").map((row) => <button key={String(row.id)} className="secondary compact" disabled={busy} onClick={() => void onFinalizePurchase(Number(row.id))}>Receive purchase #{String(row.id)}</button>)}</div>}
       </section>

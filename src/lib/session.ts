@@ -6,6 +6,7 @@ export type SessionUser = {
   username: string;
   fullName: string;
   role: string;
+  permissions?: string[];
 };
 
 const COOKIE_NAME = "dan_pos_session";
@@ -36,13 +37,16 @@ export async function readSession(request: NextRequest): Promise<SessionUser | n
       typeof payload.id !== "number" ||
       typeof payload.username !== "string" ||
       typeof payload.fullName !== "string" ||
-      typeof payload.role !== "string"
+      typeof payload.role !== "string" ||
+      (payload.permissions !== undefined &&
+        (!Array.isArray(payload.permissions) || !payload.permissions.every((value) => typeof value === "string")))
     ) return null;
     return {
       id: payload.id,
       username: payload.username,
       fullName: payload.fullName,
       role: payload.role,
+      ...(Array.isArray(payload.permissions) ? { permissions: payload.permissions as string[] } : {}),
     };
   } catch {
     return null;
