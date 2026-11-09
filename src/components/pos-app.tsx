@@ -125,6 +125,7 @@ export default function PosApp() {
   const [fromDate, setFromDate] = useState(() => dateInput(new Date(Date.now() - 29 * 86_400_000)));
   const [toDate, setToDate] = useState(() => dateInput(new Date()));
   const [activeOrder, setActiveOrder] = useState<{ id: number; number: string; total: string; currency: string } | null>(null);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [moduleRows, setModuleRows] = useState<Record<string, Record<string, unknown>[]>>({});
@@ -350,6 +351,7 @@ export default function PosApp() {
       setBootstrap(null);
       setCart([]);
       setActiveOrder(null);
+      setPaymentDialogOpen(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not sign out.");
     } finally {
@@ -389,7 +391,23 @@ export default function PosApp() {
     ));
   }
 
-  async function createOrder() {
+  function resetSale(resetDetails: boolean) {
+    if (cart.length && !window.confirm("Discard the current sale items?")) return;
+    setCart([]);
+    if (resetDetails) {
+      setCustomerName("");
+      setOrderType("take_away");
+      setTableId("");
+    }
+    setNotice("");
+  }
+
+  async function createOrder(openPayment: boolean) {
+    if (activeOrder) {
+      setNotice("Complete or close the pending payment before saving another order.");
+      setPaymentDialogOpen(true);
+      return;
+    }
     if (!cart.length) return;
     if (orderType === "dine_in" && !tableId) {
       setNotice("Select an available table for dine-in.");
@@ -409,6 +427,7 @@ export default function PosApp() {
       });
       setActiveOrder({ id: result.orderId, number: result.orderNumber, total: result.total, currency: result.currency });
       setPaymentAmount(result.total);
+      setPaymentDialogOpen(openPayment);
       setCart([]);
       setNotice(`Order ${result.orderNumber} saved. Record payment to complete it.`);
       await loadProducts();
@@ -437,6 +456,7 @@ export default function PosApp() {
           : "Payment recorded as pending until the full balance is paid.");
       if (result.status === "paid") {
         setActiveOrder(null);
+        setPaymentDialogOpen(false);
         await loadProducts();
         await loadOrders();
         if (user && ["Admin", "Manager"].includes(user.role)) await loadDashboard();
@@ -525,36 +545,49 @@ export default function PosApp() {
         {tab === "pos" && (
           <div className="pos-layout">
             <aside className="cart-panel">
-              <div className="pos-order-meta"><strong>Order: New</strong><strong>Customer: {customerName || "Walk-in customer"}</strong><strong>Type: {orderType === "dine_in" ? "Dine in" : "Take away"}</strong>{orderType === "dine_in" && <strong>Table: {bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected"}</strong>}</div>
+              <div className="pos-order-meta">
+                <strong><span>Order</span>{activeOrder?.number ?? "New order"}</strong>
+                <strong><span>Customer</span>{customerName.trim() || "Walk-in customer"}</strong>
+                <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
+                <strong><span>Table</span>{orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
+              </div>
+              {activeOrder && <div className="pos-pending-order"><span>Payment due for {activeOrder.number}</span><button type="button" onClick={() => { setPaymentAmount(activeOrder.total); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
               <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
               <div className="order-controls">
-                <select value={orderType} onChange={(event) => setOrderType(event.target.value as "take_away" | "dine_in")}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select>
-                {orderType === "dine_in" && <select value={tableId} onChange={(event) => setTableId(event.target.value)}><option value="">Select table</option>{bootstrap?.tables.map((table) => <option key={table.id} value={table.id}>{table.table_name} · {table.capacity} seats</option>)}</select>}
-                <input aria-label="Customer name" placeholder="Customer name (optional)" value={customerName} onChange={(event) => setCustomerName(event.target.value)} />
+                <label>Order type<select value={orderType} onChange={(event) => { setOrderType(event.target.value as "take_away" | "dine_in"); if (event.target.value === "take_away") setTableId(""); }}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select></label>
+                {orderType === "dine_in" && <label>Select table<select value={tableId} onChange={(event) => setTableId(event.target.value)}><option value="">Choose available table</option>{bootstrap?.tables.map((table) => <option key={table.id} value={table.id}>{table.table_name} · {table.capacity} seats</option>)}</select></label>}
+                <label className="customer-control">Customer<input aria-label="Customer name" placeholder="Walk-in customer" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /></label>
               </div>
+              <div className="cart-table-header"><span>Item description</span><span>Qty</span><span>Price</span><span>Total</span><span>Action</span></div>
               <div className="cart-lines">
                 {cart.map((line) => <div className="cart-line" key={line.product.id}>
-                  <div className="cart-product"><strong>{line.product.name}</strong><small>{money(line.product.price, currency)} each</small></div>
+                  <div className="cart-product"><strong>{line.product.name}</strong><small>{line.product.category_name}</small></div>
                   <div className="quantity-control"><button aria-label={`Remove one ${line.product.name}`} onClick={() => changeQuantity(line.product.id, line.quantity - 1)}>−</button><span>{line.quantity}</span><button aria-label={`Add one ${line.product.name}`} onClick={() => changeQuantity(line.product.id, line.quantity + 1)}>+</button></div>
+                  <span className="cart-unit-price">{money(line.product.price, currency)}</span>
                   <b className="line-total">{money(Number(line.product.price) * line.quantity, currency)}</b>
+                  <button className="remove-line" aria-label={`Remove ${line.product.name}`} onClick={() => changeQuantity(line.product.id, 0)}>×</button>
                 </div>)}
                 {!cart.length && <div className="cart-empty"><span>＋</span><strong>Your order is empty</strong><small>Add items from the menu to get started.</small></div>}
               </div>
               <div className="cart-summary">
                 <div><span>Subtotal</span><span>{money(cartTotals.subtotal, currency)}</span></div>
-                {cartTotals.discount > 0 && <div><span>Discount ({bootstrap?.settings.discount}%)</span><span>−{money(cartTotals.discount, currency)}</span></div>}
-                {cartTotals.vat > 0 && <div><span>VAT ({bootstrap?.settings.vat}%)</span><span>{money(cartTotals.vat, currency)}</span></div>}
-                {cartTotals.service > 0 && <div><span>Service charge ({bootstrap?.settings.service}%)</span><span>{money(cartTotals.service, currency)}</span></div>}
+                <div><span>Discount ({bootstrap?.settings.discount ?? "0"}%)</span><span>−{money(cartTotals.discount, currency)}</span></div>
+                <div><span>VAT ({bootstrap?.settings.vat ?? "0"}%)</span><span>{money(cartTotals.vat, currency)}</span></div>
+                <div><span>Service ({bootstrap?.settings.service ?? "0"}%)</span><span>{money(cartTotals.service, currency)}</span></div>
                 <div className="grand-total"><strong>Total</strong><strong>{money(cartTotals.total, currency)}</strong></div>
-                <div className="pos-actions"><button className="secondary" disabled={!cart.length || busy} onClick={() => { setCart([]); setCustomerName(""); }}>Cancel</button><button className="primary" disabled={!cart.length || busy} onClick={createOrder}>{busy ? "Saving…" : "Save order"}</button></div>
-                <button className="payment-button" disabled={!cart.length || busy} onClick={createOrder}>✓ Payment</button>
+                <div className="pos-actions">
+                  <button type="button" className="pos-new-button" disabled={busy || Boolean(activeOrder)} onClick={() => resetSale(true)}>＋ New</button>
+                  <button type="button" className="secondary" disabled={busy || Boolean(activeOrder) || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
+                  <button type="button" className="primary" disabled={!cart.length || busy || Boolean(activeOrder)} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
+                </div>
+                <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.total), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>
               </div>
             </aside>
 
             <section className="catalog-panel pos-catalog">
-              <div className="pos-catalog-heading"><h2>{categoryId ? bootstrap?.categories.find((category) => String(category.id) === categoryId)?.name : "Products"}</h2><span className="count-pill">{products.length} items</span></div>
+              <div className="pos-catalog-heading"><div><p className="eyebrow">MENU</p><h2>{categoryId ? bootstrap?.categories.find((category) => String(category.id) === categoryId)?.name : "Products"}</h2></div><span className="count-pill">{products.length} products</span></div>
               <div className="catalog-tools">
-                <div className="search-box"><span>⌕</span><input aria-label="Search menu" placeholder="Scan barcode or search products…" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+                <div className="search-box"><span>⌕</span><input aria-label="Search menu" placeholder="Scan barcode or search products…" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && products.length === 1) addToCart(products[0]); }} /></div>
               </div>
               <div className="product-grid">
                 {products.map((product) => <button className="product-card" key={product.id} onClick={() => addToCart(product)}>
@@ -574,10 +607,10 @@ export default function PosApp() {
           </div>
         )}
 
-        {tab === "pos" && activeOrder && (
+        {tab === "pos" && activeOrder && paymentDialogOpen && (
           <div className="payment-backdrop">
             <form className="payment-dialog" onSubmit={recordPayment}>
-              <button type="button" className="dialog-close" aria-label="Close" onClick={() => setActiveOrder(null)}>×</button>
+              <button type="button" className="dialog-close" aria-label="Close" onClick={() => setPaymentDialogOpen(false)}>×</button>
               <p className="eyebrow">ORDER {activeOrder.number}</p><h2>Record payment</h2>
               <div className="payment-total">{money(activeOrder.total, activeOrder.currency)}</div>
               <label>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="m-pesa">M-Pesa (pending)</option><option value="other">Other</option></select></label>
@@ -635,7 +668,7 @@ export default function PosApp() {
         </section>}
 
         {tab === "invoice" && <section className="page-content">
-          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.total, activeOrder.currency)}</span></div><button className="primary" onClick={() => setTab("pos")}>Complete payment</button></div>}
+          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.total, activeOrder.currency)}</span></div><button className="primary" onClick={() => { setTab("pos"); setPaymentDialogOpen(true); }}>Complete payment</button></div>}
           <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} />
         </section>}
 
