@@ -95,6 +95,7 @@ export async function GET(request: NextRequest, context: Context) {
   if (isResponse(user)) return user;
   try {
     let rows;
+    const extras: Record<string, unknown> = {};
     switch (module) {
       case "products":
         rows = (await db.query(
@@ -189,7 +190,6 @@ export async function GET(request: NextRequest, context: Context) {
         )).rows;
         break;
     }
-    const extras: Record<string, unknown> = {};
     if (module === "products") extras.categories = (await db.query("SELECT id, name FROM categories ORDER BY name")).rows;
     if (module === "inventory") extras.products = (await db.query("SELECT id, name FROM products WHERE is_available = TRUE ORDER BY name")).rows;
     if (module === "purchases") extras.suppliers = (await db.query("SELECT id, name FROM suppliers WHERE is_active = TRUE ORDER BY name")).rows;

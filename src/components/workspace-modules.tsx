@@ -70,7 +70,7 @@ const labels: Record<string, string> = {
   description: "Description", category: "Category", amount: "Amount", currency: "Currency",
   method: "Method", username: "Username", full_name: "Full name", role_name: "Role",
   last_login: "Last sign in", key: "Setting", value: "Value", invoice_number: "Invoice",
-  order_number: "Order", customer_name: "Customer", table_name: "Table", issued_at: "Issued", total: "Total", remaining_due: "Balance due", cashier: "Cashier",
+  order_number: "Order", customer_name: "Customer", issued_at: "Issued", total: "Total", remaining_due: "Balance due", cashier: "Cashier",
   action: "Action", entity_type: "Entity", entity_id: "Record", details: "Details",
   privilege_summary: "Privileges",
 };
