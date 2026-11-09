@@ -4,7 +4,7 @@ Restaurant point-of-sale system with a browser-based web app for Vercel and a Wi
 
 ## Web app
 
-The Next.js web app includes PIN login, role-based access, a restaurant workspace launcher, POS checkout, product and category management, inventory adjustments, suppliers and purchases, expenses, tables, user and settings management, invoices, audit history, kitchen tickets, dashboards, and sales reports. Product photos upload to a private Neon Object Storage bucket and are served with short-lived signed URLs.
+The Next.js web app includes PIN login, role-based access, a role-appropriate landing page (Dashboard for administrators and managers, POS for other staff, and KOT for kitchen staff), POS checkout, product and category management, inventory adjustments, suppliers and purchases, expenses, tables, user and settings management, invoices, audit history, kitchen tickets, and sales reports. Product photos upload to a private Neon Object Storage bucket and are served with short-lived signed URLs.
 
 Product photos must be JPEG, PNG, or WebP and no larger than 4 MB. M-Pesa payments remain pending; this app does not initiate or simulate live transactions. Inventory is deducted only after a successful recorded payment.
 

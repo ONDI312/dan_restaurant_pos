@@ -57,9 +57,9 @@ type Report = {
   profit: { name: string; currency: string; profit: string }[];
 };
 type CartLine = { product: Product; quantity: number };
-type ModuleId = "home" | "pos" | "product" | "inventory" | "supplier" | "purchase"
+type ModuleId = "pos" | "product" | "inventory" | "supplier" | "purchase"
   | "category" | "tables" | "dashboard" | "expense" | "reports" | "users"
-  | "settings" | "invoice" | "kitchen" | "audit" | "close";
+  | "settings" | "invoice" | "kitchen" | "audit";
 
 const moduleLinks: { id: ModuleId; label: string; icon: string; permission?: string; resource?: WorkspaceModule }[] = [
   { id: "pos", label: "POS", icon: "▣", permission: "pos.use" },
@@ -69,7 +69,6 @@ const moduleLinks: { id: ModuleId; label: string; icon: string; permission?: str
   { id: "purchase", label: "Purchase", icon: "⇧", permission: "purchases.read", resource: "purchase" },
   { id: "category", label: "Category", icon: "▦", permission: "catalog.read", resource: "category" },
   { id: "tables", label: "Tables", icon: "▱", permission: "tables.read", resource: "tables" },
-  { id: "dashboard", label: "Dashboard", icon: "◫", permission: "reports.view" },
   { id: "expense", label: "Expense", icon: "¤", permission: "expenses.read", resource: "expense" },
   { id: "reports", label: "Reports", icon: "▥", permission: "reports.view" },
   { id: "users", label: "Users", icon: "♙", permission: "users.manage", resource: "users" },
@@ -77,7 +76,6 @@ const moduleLinks: { id: ModuleId; label: string; icon: string; permission?: str
   { id: "invoice", label: "Invoice list", icon: "▧", permission: "invoices.view", resource: "invoice" },
   { id: "kitchen", label: "KOT", icon: "▣", permission: "kitchen.use" },
   { id: "audit", label: "Audit log", icon: "◷", permission: "audit.read", resource: "audit" },
-  { id: "close", label: "Close", icon: "⏻" },
 ];
 
 const request = async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -108,7 +106,7 @@ const shortDate = (value: string) =>
 export default function PosApp() {
   const [user, setUser] = useState<User | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
-  const [tab, setTab] = useState<ModuleId>("home");
+  const [tab, setTab] = useState<ModuleId>("dashboard");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -278,7 +276,13 @@ export default function PosApp() {
     setUser(signedInUser);
     setNotice("");
     try {
-      setTab(signedInUser.role === "Kitchen" ? "kitchen" : "home");
+      setTab(
+        signedInUser.role === "Kitchen"
+          ? "kitchen"
+          : ["Admin", "Manager"].includes(signedInUser.role)
+            ? "dashboard"
+            : "pos",
+      );
       if (signedInUser.role !== "Kitchen") {
         const config = await request<Bootstrap & { user: User }>("/api/bootstrap");
         setBootstrap(config);
@@ -310,7 +314,7 @@ export default function PosApp() {
       loadProducts().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load products."));
     } else if (tab === "kitchen") {
       loadKitchen().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets."));
-    } else if ((tab === "dashboard" || tab === "home") && ["Admin", "Manager"].includes(user.role)) {
+    } else if (tab === "dashboard" && ["Admin", "Manager"].includes(user.role)) {
       loadDashboard().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load dashboard."));
     } else if (tab === "reports" && ["Admin", "Manager"].includes(user.role)) {
       loadReport().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load reports."));
@@ -486,16 +490,16 @@ export default function PosApp() {
   const visibleModules = moduleLinks.filter((item) => {
     if (user.role === "Admin") return true;
     if (user.role === "Manager") return item.id !== "users";
-    if (user.role === "Kitchen") return ["kitchen", "close"].includes(item.id);
-    return ["pos", "product", "category", "tables", "invoice", "close"].includes(item.id);
+    if (user.role === "Kitchen") return item.id === "kitchen";
+    return ["pos", "product", "category", "tables", "invoice"].includes(item.id);
   });
-  const currentLabel = moduleLinks.find((item) => item.id === tab)?.label ?? "Workspace";
+  const currentLabel = tab === "dashboard" ? "Dashboard" : moduleLinks.find((item) => item.id === tab)?.label ?? "Workspace";
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="side-brand"><span className="brand-mark small">D</span><span>{bootstrap?.settings.restaurantName ?? "DAN POS"}<small>OPERATIONS</small></span></div>
-        <button className="home-link" onClick={() => { setTab("home"); setNotice(""); }}>⌂ <span>Workspace home</span></button>
+        {canReports && <button className={tab === "dashboard" ? "dashboard-link active" : "dashboard-link"} onClick={() => { setTab("dashboard"); setNotice(""); }}><span>◫</span><span>Dashboard</span></button>}
         <div className="side-label">MODULES</div>
         <nav className="side-nav">
           {visibleModules.map((item) => (
@@ -513,31 +517,10 @@ export default function PosApp() {
 
       <section className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{tab === "home" ? "Restaurant workspace" : currentLabel}</h1></div>
+          <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{currentLabel}</h1></div>
           <div className="topbar-user"><span className="online-dot" />{user.fullName}<span className="role-pill">{user.role}</span></div>
         </header>
         {notice && <div className={`notice ${notice.toLowerCase().includes("could not") || notice.toLowerCase().includes("invalid") ? "error" : ""}`} role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-
-        {tab === "home" && <section className="module-home">
-          <div className="module-home-heading"><div><p className="eyebrow">WELCOME, {user.fullName.toUpperCase()}</p><h2>What would you like to do?</h2><p>Choose a workspace module to get started.</p></div><button className="secondary" onClick={signOut}>Sign out ↗</button></div>
-          {canReports && <div className="stats-grid module-home-stats">
-            <article className="stat-card"><span className="stat-icon orange">↗</span><small>Today's sales</small>{dashboard?.sales.length ? dashboard.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) : <strong>{money(0, currency)}</strong>}</article>
-            <article className="stat-card"><span className="stat-icon green">▤</span><small>Paid orders</small><strong>{dashboard?.sales.reduce((sum, item) => sum + Number(item.order_count), 0) ?? 0}</strong></article>
-            <article className="stat-card"><span className="stat-icon blue">▦</span><small>Available tables</small><strong>{dashboard?.tables.available ?? 0}</strong></article>
-            <article className="stat-card"><span className="stat-icon red">!</span><small>Low-stock products</small><strong>{dashboard?.lowStock.length ?? 0}</strong></article>
-          </div>}
-          <div className="module-launcher">
-            {visibleModules.map((item) => <button key={item.id} className="module-tile" onClick={() => { setTab(item.id); setNotice(""); }}>
-              <span className="module-tile-icon">{item.icon}</span><strong>{item.label}</strong>
-            </button>)}
-          </div>
-        </section>}
-
-        {tab === "close" && <section className="close-module">
-          <span className="close-module-icon">⏻</span><h2>Close workspace</h2>
-          <p>Sign out of the restaurant point-of-sale system on this device.</p>
-          <button className="primary" disabled={busy} onClick={signOut}>Sign out</button>
-        </section>}
 
         {tab === "pos" && (
           <div className="pos-layout">
