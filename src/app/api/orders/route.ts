@@ -64,10 +64,10 @@ export async function GET(request: NextRequest) {
          WHERE o.created_by = $1 AND o.status NOT IN ('cancelled', 'paid')
            AND o.total > COALESCE((SELECT SUM(p.amount_paid) FROM payments p
              WHERE p.order_id = o.id AND p.status = 'paid'), 0)
-         ORDER BY o.created_at DESC, o.id DESC LIMIT 1`,
+         ORDER BY o.created_at DESC, o.id DESC LIMIT 50`,
         [user.id],
       );
-      return NextResponse.json({ order: result.rows[0] ?? null });
+      return NextResponse.json({ orders: result.rows });
     }
     const result = await db.query(
       `SELECT o.id, o.order_number, o.order_type, o.customer_name, o.total, o.currency, o.status,
@@ -242,6 +242,10 @@ export async function POST(request: NextRequest) {
       `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
        VALUES ($1, 'create', 'order', $2, $3)`,
       [user.id, String(orderId), JSON.stringify({ orderNumber, currency, total: amount(totalCents) })],
+    );
+    await client.query(
+      "INSERT INTO invoices (invoice_number, order_id) VALUES ($1, $2) ON CONFLICT (order_id) DO NOTHING",
+      [`INV-${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`, orderId],
     );
     await client.query("COMMIT");
     return NextResponse.json(

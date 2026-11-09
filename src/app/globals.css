@@ -338,3 +338,14 @@ tbody tr:last-child td { border-bottom: 0; }
   .quantity-control button { width: 21px; height: 24px; }
   .cart-unit-price, .line-total { font-size: 9px; }
 }
+@media print {
+  body * { visibility: hidden !important; }
+  .receipt-dialog, .receipt-dialog * { visibility: visible !important; }
+  .receipt-backdrop { position: static !important; display: block !important; padding: 0 !important; background: white !important; }
+  .receipt-dialog { position: absolute !important; inset: 0 auto auto 0 !important; width: 80mm !important; max-width: 80mm !important; margin: 0 !important; box-shadow: none !important; }
+  .receipt-dialog button { display: none !important; }
+}
+
+.receipt-lines { display: grid; gap: 8px; margin: 18px 0; }
+.receipt-lines > div { display: flex; justify-content: space-between; gap: 12px; }
+.receipt-dialog > p { line-height: 1.5; }

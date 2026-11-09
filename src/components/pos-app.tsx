@@ -143,6 +143,7 @@ export default function PosApp() {
     tableName: string | null;
   } | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [receipt, setReceipt] = useState<{ number: string; customer: string; type: string; table: string; lines: CartLine[]; total: number; currency: string } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [transactionRef, setTransactionRef] = useState("");
@@ -409,9 +410,6 @@ export default function PosApp() {
     if (!user || loading) return;
     if (tab === "pos" && can(user.role, "pos.use", user.permissions)) {
       loadProducts().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load products."));
-      if (can(user.role, "payments.record", user.permissions)) {
-        loadPendingOrder().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not restore the pending order."));
-      }
     } else if (tab === "kitchen") {
       void refreshKitchen();
     } else if (tab === "dashboard" && can(user.role, "reports.view", user.permissions)) {
@@ -422,7 +420,7 @@ export default function PosApp() {
       const module = moduleLinks.find((item) => item.id === tab)?.resource;
       if (module) void refreshModule(module);
     }
-  }, [loadPendingOrder, loadProducts, loading, refreshDashboard, refreshKitchen, refreshModule, refreshReport, tab, user]);
+  }, [loadProducts, loading, refreshDashboard, refreshKitchen, refreshModule, refreshReport, tab, user]);
 
   useEffect(() => {
     if (!user || loading || tab !== "kitchen") return;
@@ -510,11 +508,6 @@ export default function PosApp() {
   }
 
   async function createOrder(openPayment: boolean) {
-    if (activeOrder) {
-      setNotice("Complete or close the pending payment before saving another order.");
-      setPaymentDialogOpen(true);
-      return;
-    }
     if (!cart.length) return;
     if (orderType === "dine_in" && !tableId) {
       setNotice("Select an available table for dine-in.");
@@ -532,7 +525,7 @@ export default function PosApp() {
           items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity })),
         }),
       });
-      setActiveOrder({
+      const savedOrder = {
         id: result.orderId,
         number: result.orderNumber,
         total: result.total,
@@ -541,11 +534,24 @@ export default function PosApp() {
         tableName: orderType === "dine_in"
           ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? null
           : null,
-      });
+      };
       setPaymentAmount(result.total);
-      setPaymentDialogOpen(openPayment);
+      setActiveOrder(openPayment ? savedOrder : null);
+      setPaymentDialogOpen(false);
+      setReceipt({
+        number: result.orderNumber,
+        customer: customerName.trim() || "Walk-in customer",
+        type: orderType === "dine_in" ? "Dine in" : "Take away",
+        table: orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "—" : "—",
+        lines: cart.map((line) => ({ ...line })),
+        total: Number(result.total),
+        currency: result.currency,
+      });
       setCart([]);
-      setNotice(`Order ${result.orderNumber} saved. Record payment to complete it.`);
+      setNotice(`Order ${result.orderNumber} saved. Give the customer their receipt.`);
+      setCustomerName("");
+      setOrderType("take_away");
+      setTableId("");
       await refreshPosViews(true);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save order.");
@@ -683,12 +689,11 @@ export default function PosApp() {
           <div className="pos-layout">
             <aside className="cart-panel">
               <div className="pos-order-meta">
-                <strong><span>Order</span>{activeOrder?.number ?? "New order"}</strong>
+                <strong><span>Order</span>New order</strong>
                 <strong><span>Customer</span>{customerName.trim() || "Walk-in customer"}</strong>
                 <strong><span>Type</span>{orderType === "dine_in" ? "Dine in" : "Take away"}</strong>
-                <strong><span>Table</span>{activeOrder ? activeOrder.tableName ?? "Not selected" : orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
+                <strong><span>Table</span>{orderType === "dine_in" ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected" : "—"}</strong>
               </div>
-              {activeOrder && <div className="pos-pending-order"><span>Balance due for {activeOrder.number}: {money(activeOrder.remaining, activeOrder.currency)}</span><div>{can(user.role, "payments.record", user.permissions) && <button type="button" onClick={() => { setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button>}{can(user.role, "orders.cancel", user.permissions) && Number(activeOrder.remaining) === Number(activeOrder.total) && <button type="button" onClick={() => void cancelOrder()} disabled={busy}>Cancel order</button>}</div></div>}
               <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
               <div className="order-controls">
                 <label>Order type<select value={orderType} onChange={(event) => { setOrderType(event.target.value as "take_away" | "dine_in"); if (event.target.value === "take_away") setTableId(""); }}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select></label>
@@ -713,9 +718,9 @@ export default function PosApp() {
                 <div><span>Service ({bootstrap?.settings.service ?? "0"}%)</span><span>{money(cartTotals.service, currency)}</span></div>
                 <div className="grand-total"><strong>Total</strong><strong>{money(cartTotals.total, currency)}</strong></div>
                 <div className="pos-actions">
-                  <button type="button" className="pos-new-button" disabled={busy || Boolean(activeOrder)} onClick={() => resetSale(true)}>＋ New</button>
-                  <button type="button" className="secondary" disabled={busy || Boolean(activeOrder) || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
-                  <button type="button" className="primary" disabled={!cart.length || busy || Boolean(activeOrder)} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
+                  <button type="button" className="pos-new-button" disabled={busy} onClick={() => resetSale(true)}>＋ New</button>
+                  <button type="button" className="secondary" disabled={busy || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
+                  <button type="button" className="primary" disabled={!cart.length || busy} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
                 </div>
                 {can(user.role, "payments.record", user.permissions) && <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.remaining), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>}
               </div>
@@ -758,6 +763,19 @@ export default function PosApp() {
             </form>
           </div>
         )}
+
+        {tab === "pos" && receipt && <div className="payment-backdrop receipt-backdrop" role="dialog" aria-modal="true" aria-label="Order receipt">
+          <section className="payment-dialog receipt-dialog">
+            <p className="eyebrow">CUSTOMER RECEIPT</p><h2>{bootstrap?.settings.restaurantName ?? "Restaurant"}</h2>
+            <p>Order {receipt.number}<br />{new Date().toLocaleString()}</p>
+            <p>{receipt.customer} · {receipt.type}{receipt.table !== "—" ? ` · ${receipt.table}` : ""}</p>
+            <div className="receipt-lines">{receipt.lines.map((line) => <div key={line.product.id}><span>{line.quantity} × {line.product.name}</span><span>{money(Number(line.product.price) * line.quantity, receipt.currency)}</span></div>)}</div>
+            <div className="payment-total"><span>Total due after dining</span><strong>{money(receipt.total, receipt.currency)}</strong></div>
+            <p>Present this receipt when you are ready to pay.</p>
+            <button className="primary full" onClick={() => window.print()}>Print receipt</button>
+            <button className="secondary full" onClick={() => setReceipt(null)}>Done</button>
+          </section>
+        </div>}
 
         {tab === "dashboard" && <section className="page-content">
           <div className="section-heading"><div><h2>Today at a glance</h2><p>Live totals from paid orders in your Neon database.</p></div><button className="secondary" onClick={() => void refreshDashboard()}>↻ Refresh</button></div>
