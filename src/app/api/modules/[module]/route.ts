@@ -166,12 +166,20 @@ export async function GET(request: NextRequest, context: Context) {
         break;
       case "invoices":
         rows = (await db.query(
-          `SELECT i.id, i.invoice_number, i.issued_at, o.order_number, o.total, o.currency,
-                  o.status, u.full_name AS cashier
-           FROM invoices i JOIN orders o ON o.id = i.order_id
+          `SELECT COALESCE(i.id, -o.id) AS id, COALESCE(i.invoice_number, 'INV-' || o.order_number) AS invoice_number,
+                  COALESCE(i.issued_at, o.created_at) AS issued_at, o.id AS order_id, o.order_number,
+                  o.order_type, o.customer_name, t.table_name, o.total, o.currency, o.status,
+                  u.full_name AS cashier,
+                  GREATEST(o.total - COALESCE((SELECT SUM(p.amount_paid) FROM payments p
+                    WHERE p.order_id = o.id AND p.status = 'paid'), 0), 0) AS remaining_due
+           FROM orders o LEFT JOIN invoices i ON i.order_id = o.id
            LEFT JOIN users u ON u.id = o.created_by
-           ORDER BY i.issued_at DESC LIMIT 500`,
+           LEFT JOIN restaurant_tables t ON t.id = o.table_id
+           WHERE o.status != 'cancelled'
+           ORDER BY CASE WHEN o.status = 'paid' THEN 1 ELSE 0 END,
+                    COALESCE(i.issued_at, o.created_at) DESC LIMIT 500`,
         )).rows;
+        extras.products = (await db.query("SELECT id, name FROM products WHERE is_available = TRUE ORDER BY name")).rows;
         break;
       case "audit":
         rows = (await db.query(

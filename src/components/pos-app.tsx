@@ -507,7 +507,7 @@ export default function PosApp() {
     setNotice("");
   }
 
-  async function createOrder(openPayment: boolean) {
+  async function createOrder() {
     if (!cart.length) return;
     if (orderType === "dine_in" && !tableId) {
       setNotice("Select an available table for dine-in.");
@@ -525,18 +525,8 @@ export default function PosApp() {
           items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity })),
         }),
       });
-      const savedOrder = {
-        id: result.orderId,
-        number: result.orderNumber,
-        total: result.total,
-        remaining: result.total,
-        currency: result.currency,
-        tableName: orderType === "dine_in"
-          ? bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? null
-          : null,
-      };
       setPaymentAmount(result.total);
-      setActiveOrder(openPayment ? savedOrder : null);
+      setActiveOrder(null);
       setPaymentDialogOpen(false);
       setReceipt({
         number: result.orderNumber,
@@ -580,12 +570,14 @@ export default function PosApp() {
         setCustomerName("");
         await refreshPosViews(true);
         if (user && can(user.role, "reports.view", user.permissions)) await refreshDashboard();
+        await refreshModule("invoice");
       } else {
         setNotice(`Payment recorded. Balance remaining: ${money(result.remainingDue, activeOrder.currency)}.`);
         setActiveOrder((current) => current
           ? { ...current, remaining: result.remainingDue }
           : current);
         setPaymentAmount(result.remainingDue);
+        await refreshModule("invoice");
       }
 
     } catch (error) {
@@ -593,6 +585,45 @@ export default function PosApp() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function openInvoicePayment(row: Record<string, unknown>) {
+    const remaining = String(row.remaining_due ?? "0");
+    setActiveOrder({
+      id: Number(row.order_id),
+      number: String(row.order_number ?? ""),
+      total: String(row.total ?? "0"),
+      remaining,
+      currency: String(row.currency ?? currency),
+      tableName: typeof row.table_name === "string" ? row.table_name : null,
+    });
+    setPaymentAmount(remaining);
+    setPaymentDialogOpen(true);
+  }
+
+  async function addInvoiceItem(orderId: number, productId: number, quantity: number) {
+    setBusy(true);
+    try {
+      await request(`/api/orders/${orderId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ productId, quantity }),
+      });
+      setNotice("Item added to the order and its balance was updated.");
+      await loadModule("invoice");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not add item to order.");
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finishReceipt() {
+    setReceipt(null);
+    setActiveOrder(null);
+    setTab("invoice");
+    setNotice("Receipt ready. The order is in the invoice list for payment.");
+    await loadModule("invoice");
   }
 
   async function cancelOrder() {
@@ -720,9 +751,8 @@ export default function PosApp() {
                 <div className="pos-actions">
                   <button type="button" className="pos-new-button" disabled={busy} onClick={() => resetSale(true)}>＋ New</button>
                   <button type="button" className="secondary" disabled={busy || !cart.length} onClick={() => resetSale(false)}>Cancel</button>
-                  <button type="button" className="primary" disabled={!cart.length || busy} onClick={() => createOrder(false)}>{busy ? "Saving…" : "Save order"}</button>
+                  <button type="button" className="primary" disabled={!cart.length || busy} onClick={() => void createOrder()}>{busy ? "Saving…" : "Save order"}</button>
                 </div>
-                {can(user.role, "payments.record", user.permissions) && <button className="payment-button" disabled={(!cart.length && !activeOrder) || busy} onClick={() => activeOrder ? (setPaymentAmount(activeOrder.remaining), setPaymentDialogOpen(true)) : createOrder(true)}>✓ Payment</button>}
               </div>
             </aside>
 
@@ -749,7 +779,7 @@ export default function PosApp() {
           </div>
         )}
 
-        {tab === "pos" && activeOrder && paymentDialogOpen && (
+        {activeOrder && paymentDialogOpen && (
           <div className="payment-backdrop">
             <form className="payment-dialog" onSubmit={recordPayment}>
               <button type="button" className="dialog-close" aria-label="Close" onClick={() => setPaymentDialogOpen(false)}>×</button>
@@ -772,8 +802,8 @@ export default function PosApp() {
             <div className="receipt-lines">{receipt.lines.map((line) => <div key={line.product.id}><span>{line.quantity} × {line.product.name}</span><span>{money(Number(line.product.price) * line.quantity, receipt.currency)}</span></div>)}</div>
             <div className="payment-total"><span>Total due after dining</span><strong>{money(receipt.total, receipt.currency)}</strong></div>
             <p>Present this receipt when you are ready to pay.</p>
-            <button className="primary full" onClick={() => window.print()}>Print receipt</button>
-            <button className="secondary full" onClick={() => setReceipt(null)}>Done</button>
+            <button className="primary full" onClick={() => { window.print(); void finishReceipt(); }}>Print receipt</button>
+            <button className="secondary full" onClick={() => void finishReceipt()}>Done · go to invoices</button>
           </section>
         </div>}
 
@@ -824,8 +854,7 @@ export default function PosApp() {
         </section>}
 
         {tab === "invoice" && <section className="page-content">
-          {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.remaining, activeOrder.currency)}</span></div>{can(user.role, "payments.record", user.permissions) && <button className="primary" onClick={() => { setTab("pos"); setPaymentAmount(activeOrder.remaining); setPaymentDialogOpen(true); }}>Complete payment</button>}</div>}
-          <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} />
+          <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} canPayInvoices={can(user.role, "payments.record", user.permissions)} canAddInvoiceItems={can(user.role, "orders.create", user.permissions)} onPayInvoice={openInvoicePayment} onAddInvoiceItem={addInvoiceItem} />
         </section>}
 
         {tab === "reports" && <section className="page-content">

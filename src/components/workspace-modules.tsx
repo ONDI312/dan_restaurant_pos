@@ -17,6 +17,10 @@ type Props = {
   busy: boolean;
   onSave: (module: WorkspaceModule, values: Row, id?: number) => Promise<void>;
   onFinalizePurchase?: (id: number) => Promise<void>;
+  canPayInvoices?: boolean;
+  canAddInvoiceItems?: boolean;
+  onPayInvoice?: (row: Row) => void;
+  onAddInvoiceItem?: (orderId: number, productId: number, quantity: number) => Promise<void>;
   onRefresh: () => void;
 };
 
@@ -53,7 +57,7 @@ const rowsKey: Record<WorkspaceModule, string[]> = {
   expense: ["description", "category", "amount", "currency", "method", "created_at"],
   users: ["username", "full_name", "role_name", "privilege_summary", "is_active", "last_login"],
   settings: ["key", "value"],
-  invoice: ["invoice_number", "order_number", "issued_at", "total", "currency", "status", "cashier"],
+  invoice: ["invoice_number", "order_number", "customer_name", "table_name", "issued_at", "total", "remaining_due", "currency", "status", "cashier"],
   audit: ["action", "entity_type", "entity_id", "username", "created_at", "details"],
 };
 
@@ -66,7 +70,7 @@ const labels: Record<string, string> = {
   description: "Description", category: "Category", amount: "Amount", currency: "Currency",
   method: "Method", username: "Username", full_name: "Full name", role_name: "Role",
   last_login: "Last sign in", key: "Setting", value: "Value", invoice_number: "Invoice",
-  order_number: "Order", issued_at: "Issued", total: "Total", cashier: "Cashier",
+  order_number: "Order", customer_name: "Customer", table_name: "Table", issued_at: "Issued", total: "Total", remaining_due: "Balance due", cashier: "Cashier",
   action: "Action", entity_type: "Entity", entity_id: "Record", details: "Details",
   privilege_summary: "Privileges",
 };
@@ -142,9 +146,11 @@ function display(value: unknown): string {
   return String(value);
 }
 
-export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, onRefresh }: Props) {
+export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, canPayInvoices, canAddInvoiceItems, onPayInvoice, onAddInvoiceItem, onRefresh }: Props) {
   const [values, setValues] = useState<Row>({});
   const [editing, setEditing] = useState<number | undefined>();
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [invoiceProducts, setInvoiceProducts] = useState<Record<string, string>>({});
   const photoInput = useRef<HTMLInputElement>(null);
   const fields = useMemo(() => fieldsFor(module, extras, editing !== undefined), [module, extras, editing]);
   const moduleName = names[module];
@@ -217,6 +223,34 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
         </label>)}</div><button className="primary" disabled={busy}>Save settings</button>
       </form> : <p className="empty-state">You can view settings but do not have permission to change them.</p>}
       <RowsTable rows={rows} keys={rowsKey[module]} />
+    </section>;
+  }
+
+  if (module === "invoice") {
+    const products = options(extras, "products");
+    const filteredRows = rows.filter((row) => [row.invoice_number, row.order_number, row.customer_name, row.table_name, row.cashier]
+      .some((value) => String(value ?? "").toLowerCase().includes(invoiceSearch.trim().toLowerCase())));
+    return <section className="module-page">
+      <ModuleHeading moduleName={moduleName} rows={rows} onRefresh={onRefresh} />
+      <div className="invoice-search"><label>Find an order or invoice<input value={invoiceSearch} onChange={(event) => setInvoiceSearch(event.target.value)} placeholder="Search order number, invoice, customer, table, or cashier" /></label></div>
+      <section className="data-card module-table"><div className="table-scroll"><table>
+        <thead><tr>{rowsKey.invoice.map((key) => <th key={key}>{labels[key] ?? key}</th>)}<th>Order actions</th></tr></thead>
+        <tbody>{filteredRows.map((row) => {
+          const orderId = Number(row.order_id);
+          const isOpen = row.status !== "paid" && row.status !== "cancelled" && Number(row.remaining_due) > 0;
+          return <tr key={String(row.id)}>
+            {rowsKey.invoice.map((key) => <td className={key === "invoice_number" || key === "order_number" ? "cell-strong" : ""} key={key}>{display(row[key])}</td>)}
+            <td><div className="invoice-actions">
+              {canPayInvoices && isOpen && <button className="primary compact" onClick={() => onPayInvoice?.(row)}>Record payment</button>}
+              {isOpen && canAddInvoiceItems && onAddInvoiceItem && <><select aria-label={`Product to add to order ${String(row.order_number)}`} value={invoiceProducts[String(row.id)] ?? ""} onChange={(event) => setInvoiceProducts((current) => ({ ...current, [String(row.id)]: event.target.value }))}><option value="">Add an item…</option>{products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><button className="secondary compact" disabled={busy || !invoiceProducts[String(row.id)]} onClick={() => {
+                const productId = Number(invoiceProducts[String(row.id)]);
+                void onAddInvoiceItem(orderId, productId, 1).then(() => setInvoiceProducts((current) => ({ ...current, [String(row.id)]: "" }))).catch(() => undefined);
+              }}>Add item</button></>}
+              {!isOpen && <span>{row.status === "cancelled" ? "Cancelled" : "Settled"}</span>}
+            </div></td>
+          </tr>;
+        })}{!filteredRows.length && <tr><td className="empty-row" colSpan={rowsKey.invoice.length + 1}>{rows.length ? "No orders match your search." : "No invoices or orders yet."}</td></tr>}</tbody>
+      </table></div></section>
     </section>;
   }
 
