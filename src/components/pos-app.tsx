@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import WorkspaceModules, { type WorkspaceModule } from "@/components/workspace-modules";
 
 type User = { id: number; username: string; fullName: string; role: string };
 type Product = {
@@ -11,6 +12,7 @@ type Product = {
   stock_quantity: number;
   category_id: number;
   category_name: string;
+  image_path?: string | null;
 };
 type Category = { id: number; name: string };
 type DiningTable = { id: number; table_name: string; capacity: number };
@@ -23,6 +25,7 @@ type Order = {
   status: string;
   kitchen_status: string;
   created_at: string;
+  customer_name?: string | null;
   table_name: string | null;
   cashier: string | null;
   payment_method: string | null;
@@ -54,7 +57,28 @@ type Report = {
   profit: { name: string; currency: string; profit: string }[];
 };
 type CartLine = { product: Product; quantity: number };
-type Tab = "overview" | "pos" | "orders" | "reports";
+type ModuleId = "home" | "pos" | "product" | "inventory" | "supplier" | "purchase"
+  | "category" | "tables" | "dashboard" | "expense" | "reports" | "users"
+  | "settings" | "invoice" | "kitchen" | "audit" | "close";
+
+const moduleLinks: { id: ModuleId; label: string; icon: string; permission?: string; resource?: WorkspaceModule }[] = [
+  { id: "pos", label: "POS", icon: "▣", permission: "pos.use" },
+  { id: "product", label: "Product", icon: "▰", permission: "catalog.read", resource: "product" },
+  { id: "inventory", label: "Inventory", icon: "▤", permission: "inventory.read", resource: "inventory" },
+  { id: "supplier", label: "Supplier", icon: "♧", permission: "suppliers.read", resource: "supplier" },
+  { id: "purchase", label: "Purchase", icon: "⇧", permission: "purchases.read", resource: "purchase" },
+  { id: "category", label: "Category", icon: "▦", permission: "catalog.read", resource: "category" },
+  { id: "tables", label: "Tables", icon: "▱", permission: "tables.read", resource: "tables" },
+  { id: "dashboard", label: "Dashboard", icon: "◫", permission: "reports.view" },
+  { id: "expense", label: "Expense", icon: "¤", permission: "expenses.read", resource: "expense" },
+  { id: "reports", label: "Reports", icon: "▥", permission: "reports.view" },
+  { id: "users", label: "Users", icon: "♙", permission: "users.manage", resource: "users" },
+  { id: "settings", label: "Settings", icon: "⚙", permission: "settings.read", resource: "settings" },
+  { id: "invoice", label: "Invoice list", icon: "▧", permission: "invoices.view", resource: "invoice" },
+  { id: "kitchen", label: "KOT", icon: "▣", permission: "kitchen.use" },
+  { id: "audit", label: "Audit log", icon: "◷", permission: "audit.read", resource: "audit" },
+  { id: "close", label: "Close", icon: "⏻" },
+];
 
 const request = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
@@ -84,7 +108,7 @@ const shortDate = (value: string) =>
 export default function PosApp() {
   const [user, setUser] = useState<User | null>(null);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
-  const [tab, setTab] = useState<Tab>("pos");
+  const [tab, setTab] = useState<ModuleId>("home");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -96,6 +120,7 @@ export default function PosApp() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [orderType, setOrderType] = useState<"take_away" | "dine_in">("take_away");
   const [tableId, setTableId] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -104,6 +129,8 @@ export default function PosApp() {
   const [activeOrder, setActiveOrder] = useState<{ id: number; number: string; total: string; currency: string } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [moduleRows, setModuleRows] = useState<Record<string, Record<string, unknown>[]>>({});
+  const [moduleExtras, setModuleExtras] = useState<Record<string, Record<string, unknown>>>({});
 
   const currency = bootstrap?.settings.currency ?? "USD";
   const cartTotals = useMemo(() => {
@@ -140,6 +167,11 @@ export default function PosApp() {
     setOrders(result.orders);
   }, []);
 
+  const loadKitchen = useCallback(async () => {
+    const result = await request<{ orders: Order[] }>("/api/orders?view=kitchen");
+    setOrders(result.orders);
+  }, []);
+
   const loadDashboard = useCallback(async () => {
     const result = await request<Dashboard>("/api/dashboard");
     setDashboard(result);
@@ -151,11 +183,102 @@ export default function PosApp() {
     setReport(result);
   }, [fromDate, toDate]);
 
+  const loadModule = useCallback(async (module: WorkspaceModule) => {
+    const route: Record<WorkspaceModule, string> = {
+      product: "products", category: "categories", inventory: "inventory",
+      supplier: "suppliers", purchase: "purchases", tables: "tables",
+      expense: "expenses", users: "users", settings: "settings",
+      invoice: "invoices", audit: "audit",
+    };
+    const result = await request<{ rows: Record<string, unknown>[]; [key: string]: unknown }>(
+      `/api/modules/${route[module]}`,
+    );
+    setModuleRows((current) => ({ ...current, [module]: result.rows }));
+    const { rows: _rows, ...extras } = result;
+    setModuleExtras((current) => ({ ...current, [module]: extras }));
+  }, []);
+
+  const saveModule = useCallback(async (
+    module: WorkspaceModule,
+    values: Record<string, unknown>,
+    id?: number,
+  ) => {
+    const route: Record<WorkspaceModule, string> = {
+      product: "products", category: "categories", inventory: "inventory",
+      supplier: "suppliers", purchase: "purchases", tables: "tables",
+      expense: "expenses", users: "users", settings: "settings",
+      invoice: "invoices", audit: "audit",
+    };
+    setBusy(true);
+    setNotice("");
+    let uploadedImageKey: string | undefined;
+    let saved = false;
+    try {
+      const requestValues = { ...values };
+      const photo = requestValues.photo;
+      delete requestValues.photo;
+      delete requestValues.currentImageUrl;
+      if (module === "product" && photo instanceof File) {
+        const formData = new FormData();
+        formData.append("file", photo);
+        const response = await fetch("/api/products/image", { method: "POST", body: formData });
+        const result = await response.json() as { key?: string; error?: string };
+        if (!response.ok || !result.key) throw new Error(result.error || "Could not upload product photo.");
+        uploadedImageKey = result.key;
+        requestValues.imageKey = uploadedImageKey;
+      }
+      await request(`/api/modules/${route[module]}`, {
+        method: id === undefined ? "POST" : "PATCH",
+        body: JSON.stringify(id === undefined ? requestValues : { ...requestValues, id }),
+      });
+      saved = true;
+      setNotice(`${moduleLinks.find((item) => item.resource === module)?.label ?? "Record"} saved.`);
+      await loadModule(module);
+      if (module === "product" || module === "category") await loadProducts();
+      if (module === "settings") {
+        const current = await request<Bootstrap & { user: User }>("/api/bootstrap");
+        setBootstrap(current);
+      }
+    } catch (error) {
+      if (uploadedImageKey && !saved) {
+        try {
+          await request("/api/products/image", {
+            method: "DELETE",
+            body: JSON.stringify({ key: uploadedImageKey }),
+          });
+        } catch (cleanupError) {
+          console.error("Could not clean up an unused product photo.", cleanupError);
+        }
+      }
+      setNotice(error instanceof Error ? error.message : "Could not save this record.");
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }, [loadModule, loadProducts]);
+
+  const finalizePurchase = useCallback(async (id: number) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await request("/api/modules/purchases", {
+        method: "PATCH",
+        body: JSON.stringify({ id, action: "finalize" }),
+      });
+      setNotice(`Purchase #${id} received into inventory.`);
+      await Promise.all([loadModule("purchase"), loadModule("inventory"), loadProducts()]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not receive purchase.");
+    } finally {
+      setBusy(false);
+    }
+  }, [loadModule, loadProducts]);
+
   const enterApp = useCallback(async (signedInUser: User) => {
     setUser(signedInUser);
     setNotice("");
     try {
-      setTab(signedInUser.role === "Kitchen" ? "orders" : "pos");
+      setTab(signedInUser.role === "Kitchen" ? "kitchen" : "home");
       if (signedInUser.role !== "Kitchen") {
         const config = await request<Bootstrap & { user: User }>("/api/bootstrap");
         setBootstrap(config);
@@ -185,14 +308,17 @@ export default function PosApp() {
     if (!user || loading) return;
     if (tab === "pos" && user.role !== "Kitchen") {
       loadProducts().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load products."));
-    } else if (tab === "orders") {
-      loadOrders().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load orders."));
-    } else if (tab === "overview" && ["Admin", "Manager"].includes(user.role)) {
+    } else if (tab === "kitchen") {
+      loadKitchen().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load kitchen tickets."));
+    } else if ((tab === "dashboard" || tab === "home") && ["Admin", "Manager"].includes(user.role)) {
       loadDashboard().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load dashboard."));
     } else if (tab === "reports" && ["Admin", "Manager"].includes(user.role)) {
       loadReport().catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load reports."));
+    } else {
+      const module = moduleLinks.find((item) => item.id === tab)?.resource;
+      if (module) loadModule(module).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load module."));
     }
-  }, [loadDashboard, loadOrders, loadProducts, loadReport, loading, tab, user]);
+  }, [loadDashboard, loadKitchen, loadModule, loadProducts, loadReport, loading, tab, user]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -272,6 +398,7 @@ export default function PosApp() {
         method: "POST",
         body: JSON.stringify({
           orderType,
+          customerName: customerName.trim(),
           tableId: orderType === "dine_in" ? Number(tableId) : null,
           items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity })),
         }),
@@ -323,7 +450,7 @@ export default function PosApp() {
     setNotice("");
     try {
       await request(`/api/kitchen/${order.id}`, { method: "POST" });
-      await loadOrders();
+      await loadKitchen();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not update kitchen ticket.");
     } finally {
@@ -356,20 +483,22 @@ export default function PosApp() {
   }
 
   const canReports = ["Admin", "Manager"].includes(user.role);
-  const tabs: { id: Tab; label: string; icon: string; visible: boolean }[] = [
-    { id: "overview", label: "Overview", icon: "◫", visible: canReports },
-    { id: "pos", label: "Point of sale", icon: "▣", visible: user.role !== "Kitchen" },
-    { id: "orders", label: user.role === "Kitchen" ? "Kitchen tickets" : "Orders", icon: "▤", visible: true },
-    { id: "reports", label: "Reports", icon: "▥", visible: canReports },
-  ];
+  const visibleModules = moduleLinks.filter((item) => {
+    if (user.role === "Admin") return true;
+    if (user.role === "Manager") return item.id !== "users";
+    if (user.role === "Kitchen") return ["kitchen", "close"].includes(item.id);
+    return ["pos", "product", "category", "tables", "invoice", "close"].includes(item.id);
+  });
+  const currentLabel = moduleLinks.find((item) => item.id === tab)?.label ?? "Workspace";
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="side-brand"><span className="brand-mark small">D</span><span>{bootstrap?.settings.restaurantName ?? "DAN POS"}<small>OPERATIONS</small></span></div>
-        <div className="side-label">WORKSPACE</div>
+        <button className="home-link" onClick={() => { setTab("home"); setNotice(""); }}>⌂ <span>Workspace home</span></button>
+        <div className="side-label">MODULES</div>
         <nav className="side-nav">
-          {tabs.filter((item) => item.visible).map((item) => (
+          {visibleModules.map((item) => (
             <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => { setTab(item.id); setNotice(""); }}>
               <span>{item.icon}</span>{item.label}
             </button>
@@ -384,32 +513,41 @@ export default function PosApp() {
 
       <section className="workspace">
         <header className="topbar">
-          <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{tabs.find((item) => item.id === tab)?.label}</h1></div>
+          <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{tab === "home" ? "Restaurant workspace" : currentLabel}</h1></div>
           <div className="topbar-user"><span className="online-dot" />{user.fullName}<span className="role-pill">{user.role}</span></div>
         </header>
         {notice && <div className={`notice ${notice.toLowerCase().includes("could not") || notice.toLowerCase().includes("invalid") ? "error" : ""}`} role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
+        {tab === "home" && <section className="module-home">
+          <div className="module-home-heading"><div><p className="eyebrow">WELCOME, {user.fullName.toUpperCase()}</p><h2>What would you like to do?</h2><p>Choose a workspace module to get started.</p></div><button className="secondary" onClick={signOut}>Sign out ↗</button></div>
+          {canReports && <div className="stats-grid module-home-stats">
+            <article className="stat-card"><span className="stat-icon orange">↗</span><small>Today's sales</small>{dashboard?.sales.length ? dashboard.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) : <strong>{money(0, currency)}</strong>}</article>
+            <article className="stat-card"><span className="stat-icon green">▤</span><small>Paid orders</small><strong>{dashboard?.sales.reduce((sum, item) => sum + Number(item.order_count), 0) ?? 0}</strong></article>
+            <article className="stat-card"><span className="stat-icon blue">▦</span><small>Available tables</small><strong>{dashboard?.tables.available ?? 0}</strong></article>
+            <article className="stat-card"><span className="stat-icon red">!</span><small>Low-stock products</small><strong>{dashboard?.lowStock.length ?? 0}</strong></article>
+          </div>}
+          <div className="module-launcher">
+            {visibleModules.map((item) => <button key={item.id} className="module-tile" onClick={() => { setTab(item.id); setNotice(""); }}>
+              <span className="module-tile-icon">{item.icon}</span><strong>{item.label}</strong>
+            </button>)}
+          </div>
+        </section>}
+
+        {tab === "close" && <section className="close-module">
+          <span className="close-module-icon">⏻</span><h2>Close workspace</h2>
+          <p>Sign out of the restaurant point-of-sale system on this device.</p>
+          <button className="primary" disabled={busy} onClick={signOut}>Sign out</button>
+        </section>}
+
         {tab === "pos" && (
           <div className="pos-layout">
-            <section className="catalog-panel">
-              <div className="section-heading"><div><h2>Menu</h2><p>Choose an item to add it to the order.</p></div><span className="count-pill">{products.length} items</span></div>
-              <div className="catalog-tools">
-                <div className="search-box"><span>⌕</span><input aria-label="Search menu" placeholder="Search products or scan barcode" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
-                <select aria-label="Filter by category" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">All categories</option>{bootstrap?.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-              </div>
-              <div className="product-grid">
-                {products.map((product) => <button className="product-card" key={product.id} onClick={() => addToCart(product)}>
-                  <span className="product-icon">{product.name.slice(0, 1).toUpperCase()}</span><span className="product-category">{product.category_name}</span><strong>{product.name}</strong><span className="product-card-bottom"><b>{money(product.price, currency)}</b><small>{product.stock_quantity} in stock</small></span>
-                </button>)}
-                {!products.length && <div className="empty-state">No available products match your search.</div>}
-              </div>
-            </section>
-
             <aside className="cart-panel">
-              <div className="cart-title"><div><p className="eyebrow">NEW SALE</p><h2>Current order</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
+              <div className="pos-order-meta"><strong>Order: New</strong><strong>Customer: {customerName || "Walk-in customer"}</strong><strong>Type: {orderType === "dine_in" ? "Dine in" : "Take away"}</strong>{orderType === "dine_in" && <strong>Table: {bootstrap?.tables.find((table) => String(table.id) === tableId)?.table_name ?? "Not selected"}</strong>}</div>
+              <div className="cart-title"><div><p className="eyebrow">CURRENT SALE</p><h2>Order items</h2></div><span className="count-pill">{cart.reduce((sum, line) => sum + line.quantity, 0)} items</span></div>
               <div className="order-controls">
                 <select value={orderType} onChange={(event) => setOrderType(event.target.value as "take_away" | "dine_in")}><option value="take_away">Take away</option><option value="dine_in">Dine in</option></select>
                 {orderType === "dine_in" && <select value={tableId} onChange={(event) => setTableId(event.target.value)}><option value="">Select table</option>{bootstrap?.tables.map((table) => <option key={table.id} value={table.id}>{table.table_name} · {table.capacity} seats</option>)}</select>}
+                <input aria-label="Customer name" placeholder="Customer name (optional)" value={customerName} onChange={(event) => setCustomerName(event.target.value)} />
               </div>
               <div className="cart-lines">
                 {cart.map((line) => <div className="cart-line" key={line.product.id}>
@@ -425,9 +563,31 @@ export default function PosApp() {
                 {cartTotals.vat > 0 && <div><span>VAT ({bootstrap?.settings.vat}%)</span><span>{money(cartTotals.vat, currency)}</span></div>}
                 {cartTotals.service > 0 && <div><span>Service charge ({bootstrap?.settings.service}%)</span><span>{money(cartTotals.service, currency)}</span></div>}
                 <div className="grand-total"><strong>Total</strong><strong>{money(cartTotals.total, currency)}</strong></div>
-                <button className="primary full" disabled={!cart.length || busy} onClick={createOrder}>{busy ? "Saving order…" : "Save order"}<span>→</span></button>
+                <div className="pos-actions"><button className="secondary" disabled={!cart.length || busy} onClick={() => { setCart([]); setCustomerName(""); }}>Cancel</button><button className="primary" disabled={!cart.length || busy} onClick={createOrder}>{busy ? "Saving…" : "Save order"}</button></div>
+                <button className="payment-button" disabled={!cart.length || busy} onClick={createOrder}>✓ Payment</button>
               </div>
             </aside>
+
+            <section className="catalog-panel pos-catalog">
+              <div className="pos-catalog-heading"><h2>{categoryId ? bootstrap?.categories.find((category) => String(category.id) === categoryId)?.name : "Products"}</h2><span className="count-pill">{products.length} items</span></div>
+              <div className="catalog-tools">
+                <div className="search-box"><span>⌕</span><input aria-label="Search menu" placeholder="Scan barcode or search products…" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+              </div>
+              <div className="product-grid">
+                {products.map((product) => <button className="product-card" key={product.id} onClick={() => addToCart(product)}>
+                  {product.image_path && /^https?:\/\//i.test(product.image_path)
+                    ? <img className="product-photo" src={product.image_path} alt="" />
+                    : <span className="product-icon">{product.name.slice(0, 1).toUpperCase()}</span>}
+                  <strong>{product.name}</strong><span className="product-category">{product.category_name}</span>
+                  <span className="product-card-bottom"><b>{money(product.price, currency)}</b><small>{product.stock_quantity} left</small></span>
+                </button>)}
+                {!products.length && <div className="empty-state">No available products match your search.</div>}
+              </div>
+              <div className="pos-category-strip">
+                <button className={!categoryId ? "active" : ""} onClick={() => setCategoryId("")}>All</button>
+                {bootstrap?.categories.map((category) => <button key={category.id} className={categoryId === String(category.id) ? "active" : ""} onClick={() => setCategoryId(String(category.id))}>{category.name}</button>)}
+              </div>
+            </section>
           </div>
         )}
 
@@ -445,7 +605,7 @@ export default function PosApp() {
           </div>
         )}
 
-        {tab === "overview" && <section className="page-content">
+        {tab === "dashboard" && <section className="page-content">
           <div className="section-heading"><div><h2>Today at a glance</h2><p>Live totals from paid orders in your Neon database.</p></div><button className="secondary" onClick={() => loadDashboard()}>↻ Refresh</button></div>
           <div className="stats-grid">
             <article className="stat-card"><span className="stat-icon orange">↗</span><small>Today's sales</small>{dashboard?.sales.length ? dashboard.sales.map((item) => <strong key={item.currency}>{money(item.total, item.currency)}</strong>) : <strong>{money(0, currency)}</strong>}</article>
@@ -461,21 +621,39 @@ export default function PosApp() {
           </section>
         </section>}
 
-        {tab === "orders" && <section className="page-content">
+        {tab === "kitchen" && <section className="kitchen-page">
+          <div className="kitchen-title"><h2>Kitchen orders display</h2><button className="secondary" onClick={() => loadKitchen()}>↻ Refresh</button></div>
+          <div className="kitchen-board">
+            {([
+              ["pending", "New orders", "New"],
+              ["preparing", "Accepted orders", "Processing"],
+              ["ready", "Completed orders", "Done"],
+              ["completed", "Delivered orders", "Delivered"],
+            ] as const).map(([status, title, displayStatus]) => {
+              const laneOrders = orders.filter((order) => order.kitchen_status === status);
+              return <section className="kitchen-lane" key={status}>
+                <h3>{title}<span>{laneOrders.length}</span></h3>
+                <div className="kitchen-lane-list">{laneOrders.map((order) => <article className="kitchen-ticket" key={order.id}>
+                  <div className="kitchen-ticket-heading"><strong># ORDER NO: {order.order_number.replace(/^ORD-/, "")}</strong><span>{displayStatus}</span></div>
+                  <p><b>Order type:</b> {order.order_type === "dine_in" ? "Dine in" : "Pick up"}</p>
+                  <p><b>Customer:</b> {order.customer_name || "Walk-in customer"}</p>
+                  <p><b>Table:</b> {order.table_name || "Not selected"}</p>
+                  <small>{shortDate(order.created_at)}</small>
+                  <ul className="ticket-items">{order.items?.map((item, index) => <li key={`${item.name}-${index}`}><strong>{item.quantity} × {item.name}</strong>{item.special_instructions && <small>{item.special_instructions}</small>}</li>)}</ul>
+                  {status !== "completed" && <div className="kitchen-ticket-actions">
+                    <button className="primary" disabled={busy} onClick={() => advanceTicket(order)}>{status === "pending" ? "Accept" : status === "preparing" ? "Done" : "Deliver"}</button>
+                    <button className="secondary" onClick={() => setNotice(`Order ${order.order_number} · ${order.items?.map((item) => `${item.quantity} × ${item.name}`).join(", ") || "No item details"}`)}>View</button>
+                  </div>}
+                </article>)}
+                {!laneOrders.length && <p className="kitchen-empty">No {title.toLowerCase()}.</p>}</div>
+              </section>;
+            })}
+          </div>
+        </section>}
+
+        {tab === "invoice" && <section className="page-content">
           {activeOrder && <div className="active-order-banner"><div><strong>{activeOrder.number}</strong><span>Payment still due · {money(activeOrder.total, activeOrder.currency)}</span></div><button className="primary" onClick={() => setTab("pos")}>Complete payment</button></div>}
-          <div className="section-heading"><div><h2>Recent orders</h2><p>Latest 100 orders, including payment and kitchen status.</p></div><button className="secondary" onClick={() => loadOrders()}>↻ Refresh</button></div>
-          {user.role === "Kitchen" ? <div className="ticket-grid">
-            {orders.map((order) => <article className="ticket-card" key={order.id}>
-              <div className="ticket-head"><div><p className="eyebrow">{order.order_type === "dine_in" ? order.table_name || "DINE IN" : "TAKE AWAY"}</p><h2>{order.order_number}</h2></div><span className={`status-tag ${order.kitchen_status === "ready" ? "success" : "warning"}`}>{order.kitchen_status}</span></div>
-              <small className="muted">{shortDate(order.created_at)}</small>
-              <ul className="ticket-items">{order.items?.map((item, index) => <li key={`${item.name}-${index}`}><strong>{item.quantity} × {item.name}</strong>{item.special_instructions && <small>{item.special_instructions}</small>}</li>)}</ul>
-              {order.kitchen_status !== "completed" && <button className="primary full" disabled={busy} onClick={() => advanceTicket(order)}>{order.kitchen_status === "pending" ? "Start preparing" : order.kitchen_status === "preparing" ? "Mark ready" : "Complete order"}</button>}
-            </article>)}
-            {!orders.length && <div className="empty-state">No active kitchen tickets.</div>}
-          </div> : <div className="data-card table-scroll"><table><thead><tr><th>Order</th><th>Date</th><th>Type</th><th>Cashier</th><th>Total</th><th>Payment</th><th>Status</th></tr></thead><tbody>
-            {orders.map((order) => <tr key={order.id}><td className="cell-strong">{order.order_number}{order.table_name && <small className="sub-cell">{order.table_name}</small>}</td><td>{shortDate(order.created_at)}</td><td>{order.order_type === "dine_in" ? "Dine in" : "Take away"}</td><td>{order.cashier ?? "—"}</td><td>{money(order.total, order.currency)}</td><td>{order.payment_method ?? (order.status === "paid" ? "Paid" : "Pending")}</td><td><span className={`status-tag ${order.status === "paid" ? "success" : order.status === "cancelled" ? "neutral" : "warning"}`}>{order.status}</span></td></tr>)}
-            {!orders.length && <tr><td colSpan={7} className="empty-row">No orders found.</td></tr>}
-          </tbody></table></div>}
+          <WorkspaceModules module="invoice" rows={moduleRows.invoice ?? []} extras={moduleExtras.invoice ?? {}} canManage={false} busy={busy} onSave={saveModule} onRefresh={() => loadModule("invoice")} />
         </section>}
 
         {tab === "reports" && <section className="page-content">
@@ -496,6 +674,20 @@ export default function PosApp() {
             <ReportTable title="Gross profit by product" headers={["Product", "Currency", "Gross profit"]} rows={report?.profit.map((item) => [item.name, item.currency, money(item.profit, item.currency)]) ?? []} />
           </div>
         </section>}
+
+        {visibleModules.map((item) => item.resource && item.id !== "invoice" && tab === item.id && (
+          <WorkspaceModules
+            key={item.id}
+            module={item.resource}
+            rows={moduleRows[item.resource] ?? []}
+            extras={moduleExtras[item.resource] ?? {}}
+            canManage={user.role === "Admin" || (user.role === "Manager" && !["settings", "users"].includes(item.resource))}
+            busy={busy}
+            onSave={saveModule}
+            onFinalizePurchase={item.id === "purchase" ? finalizePurchase : undefined}
+            onRefresh={() => loadModule(item.resource!)}
+          />
+        ))}
       </section>
     </main>
   );
