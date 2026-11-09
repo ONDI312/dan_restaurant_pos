@@ -25,10 +25,12 @@ export async function DELETE(request: NextRequest, context: Context) {
       order_id: string;
       order_number: string;
       order_status: string;
+      total: string;
+      currency: string;
       deleted_at: string | null;
     }>(
       `SELECT i.id, i.invoice_number, i.order_id, o.order_number,
-              o.status AS order_status, i.deleted_at
+              o.status AS order_status, o.total, o.currency, i.deleted_at
        FROM invoices i JOIN orders o ON o.id = i.order_id
        WHERE i.id = $1 FOR UPDATE OF i, o`,
       [id],
@@ -36,6 +38,17 @@ export async function DELETE(request: NextRequest, context: Context) {
     const invoice = result.rows[0];
     if (!invoice || invoice.deleted_at) throw validationError("This invoice was not found or has already been removed.");
     if (invoice.order_status !== "paid") throw validationError("Only settled invoices can be removed.");
+
+    const payments = await client.query<{ id: string; method: string; amount_paid: string }>(
+      "SELECT id, method, amount_paid FROM payments WHERE order_id = $1 AND status = 'paid' FOR UPDATE",
+      [invoice.order_id],
+    );
+    await client.query("UPDATE payments SET status = 'voided' WHERE order_id = $1 AND status = 'paid'", [invoice.order_id]);
+    const cancelledOrder = await client.query(
+      "UPDATE orders SET status = 'cancelled' WHERE id = $1 AND status = 'paid'",
+      [invoice.order_id],
+    );
+    if (cancelledOrder.rowCount !== 1) throw validationError("This order changed before the invoice could be deleted.");
 
     await client.query(
       "UPDATE invoices SET deleted_at = CURRENT_TIMESTAMP, deleted_by = $2 WHERE id = $1",
@@ -48,7 +61,16 @@ export async function DELETE(request: NextRequest, context: Context) {
         invoiceNumber: invoice.invoice_number,
         orderId: invoice.order_id,
         orderNumber: invoice.order_number,
-        retainedSettledSale: true,
+        total: invoice.total,
+        currency: invoice.currency,
+        voidedPayments: payments.rows.map((payment) => ({
+          id: payment.id,
+          method: payment.method,
+          amount: payment.amount_paid,
+        })),
+        revenueRemoved: true,
+        inventoryRestored: false,
+        externalRefundIssued: false,
       })],
     );
     await client.query("COMMIT");

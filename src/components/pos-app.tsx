@@ -630,13 +630,13 @@ export default function PosApp() {
     const invoiceNumber = String(row.invoice_number ?? "");
     if (!Number.isSafeInteger(invoiceId) || invoiceId <= 0) return;
     const confirmed = window.confirm(
-      `Delete invoice ${invoiceNumber} from the invoice list? The settled order, payment, sales reports, and stock history will remain unchanged. This action will be recorded in the audit log.`,
+      `Delete invoice ${invoiceNumber}? Its order will be voided, its recorded payments will be excluded from totals and reports, and revenue will decrease. Stock will not be restored, and this does not issue an actual refund. This action is recorded in the audit log.`,
     );
     if (!confirmed) return;
     setBusy(true);
     try {
       await request(`/api/invoices/${invoiceId}`, { method: "DELETE" });
-      setNotice(`Invoice ${invoiceNumber} was removed. The settled sale and its history remain recorded.`);
+      setNotice(`Invoice ${invoiceNumber} and its sale were removed from financial totals. The action remains in the audit log.`);
       await loadModule("invoice");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not remove invoice.");
