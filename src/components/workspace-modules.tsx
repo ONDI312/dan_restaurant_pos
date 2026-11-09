@@ -7,6 +7,7 @@ export type WorkspaceModule =
   | "tables" | "expense" | "users" | "settings" | "invoice" | "audit";
 
 type Row = Record<string, unknown>;
+type AuditQuery = { action: string; entity: string; user: string; from: string; to: string; page: number };
 type Option = { id: number; name: string; permissions?: string[] };
 type Permission = { key: string; label: string };
 type Props = {
@@ -23,6 +24,7 @@ type Props = {
   onPayInvoice?: (row: Row) => void;
   onAddInvoiceItem?: (orderId: number, productId: number, quantity: number) => Promise<void>;
   onDeleteInvoice?: (row: Row) => Promise<void>;
+  onAuditQuery?: (query: AuditQuery) => Promise<void>;
   onRefresh: () => void;
 };
 
@@ -148,11 +150,23 @@ function display(value: unknown): string {
   return String(value);
 }
 
-export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, canPayInvoices, canAddInvoiceItems, canDeleteInvoices, onPayInvoice, onAddInvoiceItem, onDeleteInvoice, onRefresh }: Props) {
+function localDate(offsetDays = 0): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+export default function WorkspaceModules({ module, rows, extras, canManage, busy, onSave, onFinalizePurchase, canPayInvoices, canAddInvoiceItems, canDeleteInvoices, onPayInvoice, onAddInvoiceItem, onDeleteInvoice, onAuditQuery, onRefresh }: Props) {
   const [values, setValues] = useState<Row>({});
   const [editing, setEditing] = useState<number | undefined>();
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [invoiceProducts, setInvoiceProducts] = useState<Record<string, string>>({});
+  const [auditAction, setAuditAction] = useState("");
+  const [auditEntity, setAuditEntity] = useState("");
+  const [auditUser, setAuditUser] = useState("");
+  const [auditFrom, setAuditFrom] = useState(() => localDate(-29));
+  const [auditTo, setAuditTo] = useState(() => localDate());
+  const [auditPreset, setAuditPreset] = useState("30");
   const photoInput = useRef<HTMLInputElement>(null);
   const fields = useMemo(() => fieldsFor(module, extras, editing !== undefined), [module, extras, editing]);
   const moduleName = names[module];
@@ -202,6 +216,30 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
     }
   }
 
+  async function queryAudit(page = 1) {
+    try {
+      await onAuditQuery?.({
+        action: auditAction,
+        entity: auditEntity,
+        user: auditUser,
+        from: auditFrom,
+        to: auditTo,
+        page,
+      });
+    } catch {
+      return;
+    }
+  }
+
+  function changeAuditPreset(preset: string) {
+    setAuditPreset(preset);
+    if (preset !== "custom") {
+      const days = Number(preset);
+      setAuditFrom(localDate(1 - days));
+      setAuditTo(localDate());
+    }
+  }
+
   if (module === "settings") {
     const settings = Object.fromEntries(rows.map((row) => [String(row.key), String(row.value ?? "")]));
     const settingFields: Field[] = [
@@ -225,6 +263,66 @@ export default function WorkspaceModules({ module, rows, extras, canManage, busy
         </label>)}</div><button className="primary" disabled={busy}>Save settings</button>
       </form> : <p className="empty-state">You can view settings but do not have permission to change them.</p>}
       <RowsTable rows={rows} keys={rowsKey[module]} />
+    </section>;
+  }
+
+  if (module === "audit") {
+    const metrics = (extras.metrics ?? {}) as Record<string, unknown>;
+    const pagination = (extras.pagination ?? {}) as Record<string, unknown>;
+    const actions = Array.isArray(extras.actions) ? extras.actions as string[] : [];
+    const entities = Array.isArray(extras.entities) ? extras.entities as string[] : [];
+    const users = Array.isArray(extras.users) ? extras.users as string[] : [];
+    const page = Number(pagination.page ?? 1);
+    const pageSize = Number(pagination.pageSize ?? 8);
+    const total = Number(pagination.total ?? 0);
+    const pageCount = Math.max(1, Number(pagination.pageCount ?? 1));
+    const firstRecord = total ? (page - 1) * pageSize + 1 : 0;
+    const lastRecord = Math.min(page * pageSize, total);
+    const firstPage = Math.max(1, Math.min(page - 2, pageCount - 4));
+    const pageNumbers = Array.from({ length: Math.min(5, pageCount) }, (_, index) => firstPage + index);
+    return <section className="audit-page">
+      <header className="audit-header">
+        <div className="audit-title-group"><span className="audit-history-icon">◴</span><div><h2>Audit Log</h2><p>Track all system activities and changes</p></div></div>
+        <div className="audit-header-controls"><label className="audit-period"><span>▦</span><select aria-label="Audit log date period" value={auditPreset} onChange={(event) => changeAuditPreset(event.target.value)}><option value="30">Last 30 Days</option><option value="7">Last 7 Days</option><option value="90">Last 90 Days</option><option value="custom">Custom Range</option></select></label><button className="audit-refresh" onClick={() => void queryAudit(page)}>⟳ <span>Refresh</span></button></div>
+      </header>
+
+      <div className="audit-metrics">
+        <article className="audit-metric"><span className="audit-metric-icon blue">♙</span><div><strong>{Number(metrics.total ?? 0).toLocaleString()}</strong><small>Total Actions</small></div></article>
+        <article className="audit-metric"><span className="audit-metric-icon green">✓</span><div><strong>{Number(metrics.successful ?? 0).toLocaleString()}</strong><small>Successful Actions</small></div></article>
+        <article className="audit-metric"><span className="audit-metric-icon purple">⚙</span><div><strong>{Number(metrics.systemOperations ?? 0).toLocaleString()}</strong><small>System Operations</small></div></article>
+        <article className="audit-metric"><span className="audit-metric-icon orange">▥</span><div><strong>{Number(metrics.trackedPercent ?? 0)}%</strong><small>Activity Tracked</small></div></article>
+      </div>
+
+      <form className="audit-filter-bar" onSubmit={(event) => { event.preventDefault(); void queryAudit(1); }}>
+        <label>Action Type<select value={auditAction} onChange={(event) => setAuditAction(event.target.value)}><option value="">All Actions</option>{actions.map((action) => <option key={action} value={action}>{action.charAt(0).toUpperCase() + action.slice(1)}</option>)}</select></label>
+        <label>Entity<select value={auditEntity} onChange={(event) => setAuditEntity(event.target.value)}><option value="">All Entities</option>{entities.map((entity) => <option key={entity} value={entity}>{entity.replaceAll("_", " ")}</option>)}</select></label>
+        <label>User<select value={auditUser} onChange={(event) => setAuditUser(event.target.value)}><option value="">All Users</option>{users.map((username) => <option key={username} value={username}>{username}</option>)}</select></label>
+        <label className="audit-range-label">Date Range<div className="audit-date-range"><span>▦</span><input aria-label="Start date" type="date" value={auditFrom} onChange={(event) => { setAuditFrom(event.target.value); setAuditPreset("custom"); }} /><span className="audit-date-separator">–</span><input aria-label="End date" type="date" value={auditTo} onChange={(event) => { setAuditTo(event.target.value); setAuditPreset("custom"); }} /></div></label>
+        <button className="audit-search" type="submit"><span>⌕</span> Search</button>
+      </form>
+
+      <section className="audit-table-card"><div className="audit-table-scroll"><table className="audit-table">
+        <thead><tr><th>#</th><th>Action</th><th>Entity</th><th>Record ID</th><th>User Name</th><th>Created</th><th>Details</th></tr></thead>
+        <tbody>{rows.map((row, index) => {
+          const action = String(row.action ?? "unknown").toLowerCase();
+          const details = typeof row.details === "string" ? row.details : JSON.stringify(row.details ?? {});
+          const createdAt = row.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(String(row.created_at))) : "—";
+          return <tr key={String(row.id)}>
+            <td>{(page - 1) * pageSize + index + 1}</td>
+            <td><span className={`audit-action-pill audit-action-${action}`}>{action}</span></td>
+            <td>{String(row.entity_type ?? "—")}</td>
+            <td>{row.entity_id == null ? "—" : String(row.entity_id)}</td>
+            <td className="audit-user-cell">{String(row.username ?? "System")}</td>
+            <td className="audit-created-cell">{createdAt}</td>
+            <td><code className="audit-details" title={details}>{details}</code></td>
+          </tr>;
+        })}{!rows.length && <tr><td colSpan={7} className="audit-empty">No activity matches these filters.</td></tr>}</tbody>
+      </table></div>
+      <footer className="audit-table-footer"><span>Showing {firstRecord}–{lastRecord} of {total.toLocaleString()} records</span><nav className="audit-pagination" aria-label="Audit log pagination">
+        <button aria-label="First page" disabled={page <= 1} onClick={() => void queryAudit(1)}>«</button><button aria-label="Previous page" disabled={page <= 1} onClick={() => void queryAudit(page - 1)}>‹</button>
+        {pageNumbers.map((number) => <button key={number} aria-current={number === page ? "page" : undefined} className={number === page ? "active" : ""} onClick={() => void queryAudit(number)}>{number}</button>)}
+        <button aria-label="Next page" disabled={page >= pageCount} onClick={() => void queryAudit(page + 1)}>›</button><button aria-label="Last page" disabled={page >= pageCount} onClick={() => void queryAudit(pageCount)}>»</button>
+      </nav></footer></section>
     </section>;
   }
 

@@ -187,11 +187,59 @@ export async function GET(request: NextRequest, context: Context) {
         extras.products = (await db.query("SELECT id, name FROM products WHERE is_available = TRUE ORDER BY name")).rows;
         break;
       case "audit":
-        rows = (await db.query(
-          `SELECT a.id, a.action, a.entity_type, a.entity_id, a.details, a.created_at,
-                  u.username FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
-           ORDER BY a.created_at DESC LIMIT 500`,
-        )).rows;
+        {
+          const action = request.nextUrl.searchParams.get("action")?.trim().slice(0, 80) ?? "";
+          const entity = request.nextUrl.searchParams.get("entity")?.trim().slice(0, 120) ?? "";
+          const username = request.nextUrl.searchParams.get("user")?.trim().slice(0, 120) ?? "";
+          const from = request.nextUrl.searchParams.get("from") ?? "";
+          const to = request.nextUrl.searchParams.get("to") ?? "";
+          const pageRaw = Number(request.nextUrl.searchParams.get("page") ?? 1);
+          const page = Number.isSafeInteger(pageRaw) && pageRaw > 0 ? Math.min(pageRaw, 1_000_000) : 1;
+          const pageSize = 8;
+          if ((from && !validDate(from)) || (to && !validDate(to)) || (from && to && from > to)) {
+            return NextResponse.json({ error: "Choose a valid audit date range." }, { status: 400 });
+          }
+          const conditions = `($1 = '' OR a.action = $1)
+            AND ($2 = '' OR a.entity_type = $2)
+            AND ($3 = '' OR COALESCE(u.username, 'System') = $3)
+            AND a.created_at >= COALESCE(NULLIF($4, '')::date, CURRENT_DATE - INTERVAL '29 days')
+            AND a.created_at < COALESCE(NULLIF($5, '')::date + INTERVAL '1 day', CURRENT_DATE + INTERVAL '1 day')`;
+          const filterValues = [action, entity, username, from, to];
+          const [records, summary, actions, entities, users] = await Promise.all([
+            db.query(
+              `SELECT a.id, a.action, a.entity_type, a.entity_id, a.details, a.created_at,
+                      COALESCE(u.username, 'System') AS username
+               FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+               WHERE ${conditions} ORDER BY a.created_at DESC, a.id DESC LIMIT $6 OFFSET $7`,
+              [...filterValues, pageSize, (page - 1) * pageSize],
+            ),
+            db.query(
+              `SELECT COUNT(*) AS total,
+                      COUNT(*) FILTER (WHERE a.action NOT IN ('failed', 'error')) AS successful,
+                      COUNT(*) FILTER (WHERE a.entity_type = 'system') AS system_operations,
+                      COALESCE(ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE a.action IS NOT NULL AND a.entity_type IS NOT NULL AND a.created_at IS NOT NULL
+                      ) / NULLIF(COUNT(*), 0)), 0) AS tracked_percent
+               FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id WHERE ${conditions}`,
+              filterValues,
+            ),
+            db.query("SELECT DISTINCT action FROM audit_logs ORDER BY action"),
+            db.query("SELECT DISTINCT entity_type FROM audit_logs ORDER BY entity_type"),
+            db.query("SELECT DISTINCT COALESCE(u.username, 'System') AS username FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ORDER BY username"),
+          ]);
+          rows = records.rows;
+          const total = Number(summary.rows[0]?.total ?? 0);
+          extras.pagination = { page, pageSize, total, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
+          extras.metrics = {
+            total,
+            successful: Number(summary.rows[0]?.successful ?? 0),
+            systemOperations: Number(summary.rows[0]?.system_operations ?? 0),
+            trackedPercent: Number(summary.rows[0]?.tracked_percent ?? 0),
+          };
+          extras.actions = actions.rows.map((row) => row.action);
+          extras.entities = entities.rows.map((row) => row.entity_type);
+          extras.users = users.rows.map((row) => row.username);
+        }
         break;
     }
     if (module === "products") extras.categories = (await db.query("SELECT id, name FROM categories ORDER BY name")).rows;

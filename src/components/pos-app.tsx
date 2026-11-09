@@ -260,15 +260,16 @@ export default function PosApp() {
     }
   }, [loadReport]);
 
-  const loadModule = useCallback(async (module: WorkspaceModule) => {
+  const loadModule = useCallback(async (module: WorkspaceModule, params?: URLSearchParams) => {
     const route: Record<WorkspaceModule, string> = {
       product: "products", category: "categories", inventory: "inventory",
       supplier: "suppliers", purchase: "purchases", tables: "tables",
       expense: "expenses", users: "users", settings: "settings",
       invoice: "invoices", audit: "audit",
     };
+    const query = params?.toString();
     const result = await request<{ rows: Record<string, unknown>[]; [key: string]: unknown }>(
-      `/api/modules/${route[module]}`,
+      `/api/modules/${route[module]}${query ? `?${query}` : ""}`,
     );
     setModuleRows((current) => ({ ...current, [module]: result.rows }));
     const { rows: _rows, ...extras } = result;
@@ -750,7 +751,7 @@ export default function PosApp() {
       </aside>
 
       <section className={tab === "kitchen" ? "workspace kitchen-workspace" : "workspace"}>
-        {tab !== "kitchen" && <header className="topbar">
+        {tab !== "kitchen" && tab !== "audit" && <header className="topbar">
           <div><p className="eyebrow">{new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date())}</p><h1>{currentLabel}</h1></div>
           <div className="topbar-user"><span className="online-dot" />{user.fullName}<span className="role-pill">{user.role}</span></div>
         </header>}
@@ -973,6 +974,17 @@ export default function PosApp() {
             onSave={saveModule}
             onFinalizePurchase={item.id === "purchase" ? finalizePurchase : undefined}
             onRefresh={() => void refreshModule(item.resource!)}
+            onAuditQuery={item.resource === "audit" ? async (filters) => {
+              const params = new URLSearchParams({
+                action: filters.action,
+                entity: filters.entity,
+                user: filters.user,
+                from: filters.from,
+                to: filters.to,
+                page: String(filters.page),
+              });
+              await loadModule("audit", params);
+            } : undefined}
           />
         ))}
       </section>
