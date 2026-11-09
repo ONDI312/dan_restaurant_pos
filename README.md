@@ -1,32 +1,44 @@
 # DAN RESTAURANT POS
 
-Python desktop point-of-sale application using PyQt6 and Neon PostgreSQL.
+Python desktop point-of-sale application built with PyQt6 and Neon PostgreSQL.
 
-## Implemented modules
+## Features
 
-The current application includes login and role checks, dashboard navigation, product/category management with local image uploads, POS orders and payments, inventory movements, tables, KOT, suppliers and purchases, expenses, branded/printable invoices, reports with cashier/category/gross-profit breakdowns and Excel-compatible CSV export, users, restaurant settings, and an audit log for business changes.
+- PIN-based login and role-based permissions
+- Product/category management with local image uploads
+- POS orders, payments, tables, and kitchen tickets
+- Inventory, suppliers, purchases, and expenses
+- Branded and printable PDF invoices
+- Sales reports with cashier, category, and gross-profit breakdowns
+- Excel-compatible CSV exports and business audit log
 
-M-Pesa entries remain pending; the app does not simulate or send live transactions. Sales inventory is deducted only after a recorded successful payment, and finalized purchases add stock transactionally. Product/category JPG and PNG images (up to 5 MB and 4096 × 4096 pixels) are stored under `dan_restaurant_pos\uploads`. Reports can be exported as PDF or Excel-compatible CSV. Gross-profit reporting uses each order item's cost snapshot, and business mutations are recorded in the Admin/Manager audit log.
+M-Pesa payments remain pending until a real payment-provider integration is configured; the app does not simulate or send live transactions. Stock is deducted only after a successful recorded payment. Product and category JPG/PNG uploads are limited to 5 MB and 4096 × 4096 pixels and stored locally under `dan_restaurant_pos/uploads/`.
 
-## Start the application
+## Requirements
 
-From this directory, install the Python requirements and start the desktop UI:
+- Python 3.13 or newer
+- A Neon PostgreSQL database and `DATABASE_URL`
+
+## Setup and run
 
 ```powershell
 python -m pip install -r .\dan_restaurant_pos\requirements.txt
 python .\run_app.py
 ```
 
-The Neon CLI stores database connection variables in `.env.local`; this file is ignored by Git. The app uses `DATABASE_URL` with Psycopg 3 and a bounded connection pool. Do not copy connection URLs into source files or logs.
+The Neon CLI writes connection variables to the ignored root `.env.local` file. For local overrides, copy `.env.example` to `.env`. Never commit database URLs, credentials, or real administrator PINs.
 
-On the first app launch, an administrator PIN is generated and displayed once. Alternatively, set `ADMIN_SETUP_PIN` in a local `.env` before first launch.
+On first launch, the app generates and displays a one-time administrator PIN. To set one explicitly before first launch, configure `ADMIN_SETUP_PIN` in your local environment.
 
-## Build check and tests
-
-`npm run build` runs Python bytecode compilation for the desktop app. Run tests with:
+## Validate
 
 ```powershell
+npm run build
 python -m pytest .\dan_restaurant_pos\tests
 ```
 
-Test fixtures use isolated SQLite databases; normal app execution uses Neon.
+The build command compiles Python bytecode; it does not produce a packaged installer. Tests use isolated SQLite databases, while normal application startup uses Neon PostgreSQL.
+
+## Continuous integration
+
+GitHub Actions runs the compile check and test suite on pushes and pull requests targeting `main`.

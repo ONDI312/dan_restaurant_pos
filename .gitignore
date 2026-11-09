@@ -1,15 +1,33 @@
-.neon
-.env.local
-node_modules/
+# Local configuration and credentials
 .env
 .env.*
 !.env.example
+.neon
+
+# JavaScript dependencies
+node_modules/
+
+# Python environments and generated files
+.venv/
+venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Test, type-check, and coverage output
 .pytest_cache/
-.venv/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+
+# Local databases, logs, and application uploads
 *.db
 *.sqlite3
+*.log
 dan_restaurant_pos/uploads/
-dist/
+
+# Build and packaging output
 build/
+dist/
+*.spec
