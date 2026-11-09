@@ -1,0 +1,15 @@
+.neon
+.env.local
+node_modules/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.db
+*.sqlite3
+dan_restaurant_pos/uploads/
+dist/
+build/

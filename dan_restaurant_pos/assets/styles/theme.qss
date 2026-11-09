@@ -1,0 +1,4 @@
+QWidget { background: #FFF1E6; color: #34251D; }
+QPushButton { background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 #D65A00, stop: 1 #B34700); color: white; border: 1px solid #E7CDBB; border-radius: 10px; }
+QLabel { color: #34251D; }
+QComboBox, QLineEdit { background: white; border: 2px solid #B34700; border-radius: 8px; padding: 8px; }
